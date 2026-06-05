@@ -27,7 +27,7 @@
     <RunAOTCompilation>false</RunAOTCompilation>
     <WasmNativeStrip>false</WasmNativeStrip>
 
-    <EmccExtraLDFlags>-sMIN_WEBGL_VERSION=2 -sWASMFS -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294901760 -sMALLOC=mimalloc</EmccExtraLDFlags>
+    <EmccExtraLDFlags>-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3 -sWASMFS -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294901760 -sMALLOC=mimalloc</EmccExtraLDFlags>
     <EmccEnvironment>web</EmccEnvironment>
     <WebAssemblyEnableStreamingResponse>true</WebAssemblyEnableStreamingResponse>
 

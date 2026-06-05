@@ -1,0 +1,42 @@
+diff --git a/SDL3/SDL3.Legacy.cs b/SDL3/SDL3.Legacy.cs
+index d3c4ecd..102e151 100644
+--- a/SDL3/SDL3.Legacy.cs
++++ b/SDL3/SDL3.Legacy.cs
+@@ -2286,10 +2286,18 @@ namespace SDL3
+ 
+ 		[DllImport(nativeLibName, EntryPoint = "SDL_CreateWindow", CallingConvention = CallingConvention.Cdecl)]
+ 		private static extern IntPtr INTERNAL_SDL_CreateWindow(byte* title, int w, int h, SDL_WindowFlags flags);
++		// WASM: the 64-bit SDL_WindowFlags param gets legalized across the mono pinvoke
++		// boundary and mismatches the native i64 signature ("function signature mismatch").
++		// Route through the uint32 SDL__CreateWindow shim (build-wasm/loader/Emscripten.c),
++		// which widens back to uint64. (celeste-wasm uses the same shim.)
++		[DllImport(nativeLibName, EntryPoint = "SDL__CreateWindow", CallingConvention = CallingConvention.Cdecl)]
++		private static extern IntPtr INTERNAL_SDL__CreateWindow_wasm(byte* title, int w, int h, uint flags);
+ 		public static IntPtr SDL_CreateWindow(string title, int w, int h, SDL_WindowFlags flags)
+ 		{
+ 			var titleUTF8 = EncodeAsUTF8(title);
+-			var result = INTERNAL_SDL_CreateWindow(titleUTF8, w, h, flags);
++			var result = OperatingSystem.IsBrowser()
++				? INTERNAL_SDL__CreateWindow_wasm(titleUTF8, w, h, (uint) flags)
++				: INTERNAL_SDL_CreateWindow(titleUTF8, w, h, flags);
+ 
+ 			SDL_free((IntPtr) titleUTF8);
+ 			return result;
+@@ -2313,8 +2321,15 @@ namespace SDL3
+ 		[DllImport(nativeLibName, CallingConvention = CallingConvention.Cdecl)]
+ 		public static extern uint SDL_GetWindowProperties(IntPtr window);
+ 
+-		[DllImport(nativeLibName, CallingConvention = CallingConvention.Cdecl)]
+-		public static extern SDL_WindowFlags SDL_GetWindowFlags(IntPtr window);
++		[DllImport(nativeLibName, EntryPoint = "SDL_GetWindowFlags", CallingConvention = CallingConvention.Cdecl)]
++		private static extern SDL_WindowFlags INTERNAL_SDL_GetWindowFlags(IntPtr window);
++		// WASM: i64 return mismatches; route through the uint32 SDL__GetWindowFlags shim.
++		[DllImport(nativeLibName, EntryPoint = "SDL__GetWindowFlags", CallingConvention = CallingConvention.Cdecl)]
++		private static extern uint INTERNAL_SDL__GetWindowFlags_wasm(IntPtr window);
++		public static SDL_WindowFlags SDL_GetWindowFlags(IntPtr window)
++			=> OperatingSystem.IsBrowser()
++				? (SDL_WindowFlags) INTERNAL_SDL__GetWindowFlags_wasm(window)
++				: INTERNAL_SDL_GetWindowFlags(window);
+ 
+ 		[DllImport(nativeLibName, EntryPoint = "SDL_SetWindowTitle", CallingConvention = CallingConvention.Cdecl)]
+ 		private static extern SDLBool INTERNAL_SDL_SetWindowTitle(IntPtr window, byte* title);

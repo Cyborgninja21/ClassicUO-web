@@ -51,6 +51,10 @@ runtime + frozen emsdk**. The build must use that matched set, not the stock
   ```bash
   ./fetch-statics.sh                    # pulls FNA-WASM-Build run, populates statics/
   ```
+- **Submodule patches** (FNA/SDL3-CS source fixes for wasm — see `patches/`):
+  ```bash
+  ./apply-patches.sh                    # idempotent; required before the first build
+  ```
   Produces `statics/{SDL3,SDL2,FNA3D,FAudio,libmojoshader,libcrypto,libopenal}.a`,
   `statics/{liba,hot_reload_detour}.o`, `statics/dotnet/` (runtime pack),
   `statics/emsdk/` (frozen emsdk).
