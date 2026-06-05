@@ -23,7 +23,11 @@
     <WasmEnableWebcil>false</WasmEnableWebcil>
     <WasmBuildNative>true</WasmBuildNative>
     <WasmRunWasmOpt>true</WasmRunWasmOpt>
-    <!-- AOT off for the first smoke build (faster); flip on + add AOTWhitelist once it boots -->
+    <!-- Interpreter is the best baseline (reaches FNA3D graphics init + MojoShader,
+         then hits a Mono interp loader.c:1826 metadata-token assert). Selective AOT
+         was tried + reverted: corlib MUST be AOT'd for the game-assembly AOT to link
+         (undefined aot_wrapper_alloc_*), but AOT'ing corlib breaks the interp<->AOT
+         async boundary in the HttpClient preload. Resolving that is the W2.d saga. -->
     <RunAOTCompilation>false</RunAOTCompilation>
     <WasmNativeStrip>false</WasmNativeStrip>
 
@@ -62,6 +66,12 @@
     <ProjectReference Include="..\..\src\ClassicUO.Client\ClassicUO.Client.csproj"
                       AdditionalProperties="OutputType=Library;PublishAot=false;SelfContained=false" />
   </ItemGroup>
+
+  <!-- Selective-AOT machinery (celeste AOTOnlyCorlib pattern) is parked here for the
+       W2.d saga; re-enable RunAOTCompilation above + restore the AOTWhitelist +
+       AOTOnlyWhitelist/BypassWasmAOTTrimCheck targets once the corlib-AOT-vs-async
+       boundary is resolved. See plan §W2.d. -->
+
 
   <Target Name="UpdateRuntimePack" AfterTargets="ResolveFrameworkReferences">
     <ItemGroup>
