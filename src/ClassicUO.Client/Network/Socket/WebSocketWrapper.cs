@@ -30,7 +30,17 @@ sealed class WebSocketWrapper : SocketWrapper
     private CancellationTokenSource _tokenSource = new();
     private CircularBuffer _receiveStream;
 
-    public override void Connect(Uri uri) => ConnectAsync(uri, _tokenSource).Wait();
+    public override void Connect(Uri uri)
+    {
+        // Single-threaded wasm can't block on async — .Wait() has no thread to run the
+        // continuation (deadlock/trap). Fire-and-forget; the async connect + receive are
+        // pumped by the JS event loop between rAF frames, and OnConnected/OnError drive
+        // the login flow. Desktop keeps the synchronous behavior.
+        if (OperatingSystem.IsBrowser())
+            _ = ConnectAsync(uri, _tokenSource);
+        else
+            ConnectAsync(uri, _tokenSource).Wait();
+    }
 
     public override void Send(byte[] buffer, int offset, int count)
     {
@@ -97,13 +107,25 @@ sealed class WebSocketWrapper : SocketWrapper
 
     private async Task ConnectWebSocketAsyncCore(Uri uri)
     {
+        _webSocket = new ClientWebSocket();
+
+        if (OperatingSystem.IsBrowser())
+        {
+            // Browser: the JS WebSocket owns the connection. The desktop path below
+            // (custom raw TcpSocket + SocketsHttpHandler for NoDelay/Available peeking)
+            // is unsupported in wasm, and ClientWebSocket.Options are mostly no-ops here.
+            await _webSocket.ConnectAsync(uri, _tokenSource.Token);
+            Log.Trace($"Connected WebSocket (browser): {uri}");
+            StartReceiveAsync().ConfigureAwait(false);
+            return;
+        }
+
         // Take control of creating the raw socket, turn off Nagle, also lets us peek at `Available` bytes.
         _rawSocket = new TcpSocket(SocketType.Stream, ProtocolType.Tcp)
         {
             NoDelay = true
         };
 
-        _webSocket = new ClientWebSocket();
         _webSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(WS_KEEP_ALIVE_INTERVAL); // ping/pong
 
         using var httpClient = new HttpClient
@@ -150,7 +172,7 @@ sealed class WebSocketWrapper : SocketWrapper
         {
             while (IsConnected)
             {
-                GrowReceiveBufferIfNeeded(ref buffer, ref memory);
+                GrowReceiveBufferIfNeeded(ref buffer, ref memory, position);
 
                 var receiveResult = await _webSocket.ReceiveAsync(memory.Slice(position), _tokenSource.Token);
 
@@ -191,8 +213,26 @@ sealed class WebSocketWrapper : SocketWrapper
 
     // This is probably unnecessary, but WebSocket frames can be up to 2^63 bytes so we put some cap on it, yet to see packets larger than 4KB come through.
     // We peek the raw tcp socket available bytes, grow if the frame is bigger, we're naively assuming no compression.
-    private void GrowReceiveBufferIfNeeded(ref byte[] buffer, ref Memory<byte> memory)
+    private void GrowReceiveBufferIfNeeded(ref byte[] buffer, ref Memory<byte> memory, int position)
     {
+        if (OperatingSystem.IsBrowser())
+        {
+            // No raw socket to peek in the browser; grow when within one chunk of the
+            // end, preserving the already-received bytes [0..position).
+            const int MIN_FREE = 4096;
+            if (buffer.Length - position >= MIN_FREE)
+                return;
+            int newSize = Math.Min(Math.Max(buffer.Length * 2, position + MIN_FREE), MAX_RECEIVE_BUFFER_SIZE);
+            if (newSize <= buffer.Length)
+                throw new SocketException((int)SocketError.MessageSize, $"WebSocket message frame too large: > {MAX_RECEIVE_BUFFER_SIZE}");
+            var grown = Shared.Rent(newSize);
+            Buffer.BlockCopy(buffer, 0, grown, 0, position);
+            Shared.Return(buffer);
+            buffer = grown;
+            memory = buffer.AsMemory();
+            return;
+        }
+
         if (_rawSocket.Available <= buffer.Length)
             return;
 

@@ -12,11 +12,18 @@ for (const f of files) {
   const buf = new Uint8Array(await (await fetch(base + f)).arrayBuffer());
   exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
 }
-console.log('[boot] UO files written; starting ClassicUO');
+// Default settings render the login screen. An optional (gitignored) ./uo-config.json
+// overrides them — e.g. a ws:// proxy URL + autologin creds for an end-to-end test.
+let settings = {
+  ip: "172.16.2.154", port: 2593,
+  ultimaonlinedirectory: "/uo", clientversion: "7.0.95.0",
+  lang: "ENU", encryption: 0, use_verdata: false
+};
+try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
+console.log('[boot] UO files written; starting ClassicUO (ip=' + settings.ip + ')');
 try {
-  exports.ClassicUOLoader.StartClassicUO('/uo', '7.0.95.0', '172.16.2.154', 2593);
+  exports.ClassicUOLoader.StartClassicUO(JSON.stringify(settings));
 } catch (e) {
-  // emscripten_set_main_loop(simulate_infinite_loop=1) throws "unwind" to hand the
-  // stack to the rAF loop — expected, not an error. Anything else is real.
+  // emscripten simulate_infinite_loop throws "unwind" to hand the stack to rAF — expected.
   if (!('' + e).includes('unwind')) console.error('[boot] ERROR', e);
 }

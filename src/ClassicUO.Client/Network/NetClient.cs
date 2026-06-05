@@ -24,6 +24,8 @@ namespace ClassicUO.Network
         private readonly CircularBuffer _sendStream;
         private SocketWrapper _socket = null;
         private SocketWrapperType? _socketType;
+        // §2.1 mode (a): the configured WSS endpoint to always re-dial in WebSocket mode.
+        private Uri _wsUri;
 
 
         public NetClient()
@@ -126,13 +128,32 @@ namespace ClassicUO.Network
             if (string.IsNullOrEmpty(ip))
                 throw new ArgumentNullException(nameof(ip));
 
-            var isWebsocketAddress = ip.ToLowerInvariant().Substring(0, 2) is "ws" or "wss";
-            var addr = $"{(isWebsocketAddress ? "" : "tcp://")}{ip}:{port}";
+            var isWebsocketAddress = ip.ToLowerInvariant().StartsWith("ws");
+
+            // §2.1 mode (a): once we're on WebSocket, every reconnect re-dials the one
+            // configured WSS endpoint. The login->game relay (0x8C) hands us the game
+            // server's RAW IP, but a browser can only re-open a WebSocket URL — so ignore
+            // the relay host and reuse the original WSS URI (the proxy opens a fresh TCP
+            // to the game port per WS connection, so this just works).
+            if (_socketType == SocketWrapperType.WebSocket && !isWebsocketAddress && _wsUri != null)
+            {
+                Log.Trace($"WS mode: ignoring relay {ip}:{port}; re-dialing {_wsUri}");
+                SetupSocket(SocketWrapperType.WebSocket);
+                _socket.Connect(_wsUri);
+                return;
+            }
+
+            // For a ws/wss address use it verbatim (it carries scheme + optional port/path);
+            // a bare host gets the tcp:// scheme + port.
+            var addr = isWebsocketAddress ? ip : $"tcp://{ip}:{port}";
 
             if (!Uri.TryCreate(addr, UriKind.RelativeOrAbsolute, out var uri))
                 throw new UriFormatException($"NetClient::Connect() invalid Uri {addr}");
 
             Log.Trace($"Connecting to {uri}");
+
+            if (isWebsocketAddress)
+                _wsUri = uri;
 
             // First connected socket sets the type for any future sockets.
             // This prevents the client from swapping from WS -> TCP on game server login

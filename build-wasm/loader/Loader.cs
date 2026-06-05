@@ -39,19 +39,16 @@ public static partial class ClassicUOLoader
     [JSExport]
     public static void WriteUOFile(string path, byte[] data) => File.WriteAllBytes(path, data);
 
+    // settingsJson is ClassicUO's settings.json verbatim (ip may be a ws://… URL to
+    // dial the WSS proxy; add username/password/autologin to skip the login UI).
     [JSExport]
-    public static void StartClassicUO(string uoDir, string clientVersion, string ip, int port)
+    public static void StartClassicUO(string settingsJson)
     {
         try
         {
             // settings.json at ExecutablePath (= Environment.CurrentDirectory = "/").
-            string json =
-                "{\"ip\":\"" + ip + "\",\"port\":" + port +
-                ",\"ultimaonlinedirectory\":\"" + uoDir + "\"" +
-                ",\"clientversion\":\"" + clientVersion + "\"" +
-                ",\"lang\":\"ENU\",\"encryption\":0,\"use_verdata\":false}";
-            File.WriteAllText("/settings.json", json);
-            Console.WriteLine("[loader] wrote /settings.json; starting ClassicUO (uoDir=" + uoDir + " ver=" + clientVersion + ")");
+            File.WriteAllText("/settings.json", settingsJson);
+            Console.WriteLine("[loader] wrote /settings.json; starting ClassicUO");
             ClassicUO.WebEntry.Start(new string[] { });
             Console.WriteLine("[loader] ClassicUO.WebEntry.Start returned");
         }
