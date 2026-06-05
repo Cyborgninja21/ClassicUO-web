@@ -7,3 +7,5 @@
 **/obj/
 /dist/
 *.zip
+/build-wasm/*.png
+*.png
