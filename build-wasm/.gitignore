@@ -1,0 +1,9 @@
+# Large build inputs — fetched via fetch-statics.sh, never committed.
+/statics/
+# Local hermetic .NET SDK (install via dotnet-install.sh; see BUILD-WASM.md).
+/.toolchain/
+# Build outputs.
+**/bin/
+**/obj/
+/dist/
+*.zip
