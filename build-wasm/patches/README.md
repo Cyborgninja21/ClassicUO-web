@@ -11,6 +11,7 @@ All patches are guarded so the **desktop build is unaffected** (runtime
 | Patch | What / why |
 |-------|------------|
 | `001-sdl3cs-wasm-pinvoke-shims.patch` | Routes `SDL_CreateWindow` + `SDL_GetWindowFlags` through the uint32 `SDL__CreateWindow` / `SDL__GetWindowFlags` shims (in `../loader/Emscripten.c`). The native SDL3 functions take/return a **64-bit `SDL_WindowFlags`**, which gets legalized across the mono pinvoke boundary and mismatches the native i64 signature (`RuntimeError: function signature mismatch`). The shims take/return uint32 and widen. |
+| `002-fna-sdl3platform-wasm.patch` | Routes FNA's `emscripten_set_main_loop` / `emscripten_cancel_main_loop` (declared `DllImport("__Native")`, which doesn't resolve as a static wasm lib) through the named `wasm_set_main_loop` / `wasm_cancel_main_loop` shims in `../loader/Emscripten.c`. Without this the browser game loop can't start (`DllNotFoundException: __Native`). |
 
 ## Refreshing a stale patch
 

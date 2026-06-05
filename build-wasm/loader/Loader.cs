@@ -1,7 +1,5 @@
 using System;
 using System.IO;
-using System.Net.Http;
-using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Loader;
@@ -29,28 +27,17 @@ public static partial class ClassicUOLoader
         };
     }
 
-    // Preload UO art into the in-memory FS at /uo. We use async HttpClient
-    // (browser fetch) + synchronous writes rather than WASMFS's fetch backend:
-    // the fetch backend needs BLOCKING reads, which are impossible on the
-    // single-threaded main thread (celeste gets away with it only because it's
-    // threaded). Downloading upfront keeps ClassicUO's later reads synchronous.
-    // Only the manifest files are created, so File.Exists probes for absent
-    // variants (e.g. .mul when we ship .uop) correctly return false.
+    // UO art preload: JS does the fetch (async, JS-native) and hands each file's
+    // bytes to this SYNCHRONOUS writer. No .NET Task/async in the managed path, so
+    // there's no interp<->AOT boundary to break when AOT is enabled (the async
+    // HttpClient version broke under AOT'd corlib). MEMFS is synchronous to read,
+    // so ClassicUO's later file reads work single-threaded. Only the files JS
+    // writes exist, so File.Exists probes for absent variants return false.
     [JSExport]
-    public static async Task PreloadUO(string urlBase, string[] files)
-    {
-        Directory.CreateDirectory("/uo");
-        using var http = new HttpClient();
-        long total = 0;
-        foreach (var f in files)
-        {
-            if (f == "manifest.json") continue;
-            byte[] bytes = await http.GetByteArrayAsync(urlBase + f);
-            File.WriteAllBytes("/uo/" + f, bytes);
-            total += bytes.Length;
-        }
-        Console.WriteLine($"[loader] preloaded {files.Length} UO files into /uo ({total / (1024 * 1024)} MB)");
-    }
+    public static void MkUODir() => Directory.CreateDirectory("/uo");
+
+    [JSExport]
+    public static void WriteUOFile(string path, byte[] data) => File.WriteAllBytes(path, data);
 
     [JSExport]
     public static void StartClassicUO(string uoDir, string clientVersion, string ip, int port)

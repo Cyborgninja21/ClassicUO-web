@@ -65,6 +65,12 @@
          self-contained wasm app can consume it (NETSDK1150). Desktop build untouched. -->
     <ProjectReference Include="..\..\src\ClassicUO.Client\ClassicUO.Client.csproj"
                       AdditionalProperties="OutputType=Library;PublishAot=false;SelfContained=false" />
+    <!-- cuoapi (CUO_API) is a plain <Reference> in ClassicUO.Client, so it doesn't
+         flow transitively into this app's publish. The Plugin class's field types
+         need it resolvable at runtime even though we use no plugins. Bundle it. -->
+    <Reference Include="cuoapi">
+      <HintPath>..\..\external\cuoapi\cuoapi.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <!-- Selective-AOT machinery (celeste AOTOnlyCorlib pattern) is parked here for the

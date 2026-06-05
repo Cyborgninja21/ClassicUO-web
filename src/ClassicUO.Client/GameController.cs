@@ -105,7 +105,13 @@ namespace ClassicUO
             _uoSpriteBatch = new UltimaBatcher2D(GraphicsDevice);
 
             _filter = HandleSdlEvent;
-            SDL_SetEventFilter(_filter, IntPtr.Zero);
+            // WASM: marshalling a managed delegate as a native SDL callback (reverse
+            // p/invoke) trips a Mono interpreter metadata-token assert (loader.c:1826).
+            // The event filter only affects input routing, not rendering, so skip it on
+            // browser for now — the login screen still renders. (TODO: re-add input via
+            // an [UnmanagedCallersOnly] function pointer.)
+            if (!OperatingSystem.IsBrowser())
+                SDL_SetEventFilter(_filter, IntPtr.Zero);
 
             Microsoft.Xna.Framework.Input.TextInputEXT.StartTextInput();
 

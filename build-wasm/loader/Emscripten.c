@@ -40,3 +40,30 @@ uint64_t SDL_GetWindowFlags(void *window);
 uint32_t SDL__GetWindowFlags(void *window) {
 	return (uint32_t)SDL_GetWindowFlags(window);
 }
+
+// --- emscripten main-loop shims ---
+// FNA declares these as DllImport("__Native"), which doesn't resolve as a static
+// wasm lib. Expose them under named symbols (resolved like the SDL/zlib shims).
+#include <emscripten.h>
+void wasm_set_main_loop(void (*func)(void), int fps, int simulate_infinite_loop) {
+	emscripten_set_main_loop(func, fps, simulate_infinite_loop);
+}
+void wasm_cancel_main_loop(void) {
+	emscripten_cancel_main_loop();
+}
+
+// --- zlib shim ---
+// ClassicUO's native zlib P/Invoke (DllImport("zlib")) can't resolve a
+// statically-linked lib in wasm, and its managed fallback throws "CRC mismatch"
+// under the interpreter. libz.a IS linked into the bundle, so expose its
+// uncompress() through a named shim (resolved like the SDL ones), with 32-bit
+// length args to match wasm32's uLong.
+extern int uncompress(unsigned char *dest, unsigned long *destLen,
+                      const unsigned char *source, unsigned long sourceLen);
+int wasm_uncompress(unsigned char *dest, int *destLen,
+                    const unsigned char *source, int sourceLen) {
+	unsigned long dl = (unsigned long)(*destLen);
+	int ret = uncompress(dest, &dl, source, (unsigned long)sourceLen);
+	*destLen = (int)dl;
+	return ret;
+}

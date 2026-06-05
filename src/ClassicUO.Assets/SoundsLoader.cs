@@ -45,7 +45,11 @@ namespace ClassicUO.Assets
                 }
                 else
                 {
-                    throw new FileNotFoundException("no sounds found");
+                    // Graceful skip: a partial-art install (e.g. the WASM client
+                    // without the ~168 MB soundLegacyMUL.uop) should still run — just
+                    // without audio — rather than aborting the whole client.
+                    ClassicUO.Utility.Logging.Log.Warn("no sound files found; skipping audio");
+                    return;
                 }
             }
 

@@ -1,0 +1,21 @@
+diff --git a/src/FNAPlatform/SDL3_FNAPlatform.cs b/src/FNAPlatform/SDL3_FNAPlatform.cs
+index f92ab2d..8d70003 100644
+--- a/src/FNAPlatform/SDL3_FNAPlatform.cs
++++ b/src/FNAPlatform/SDL3_FNAPlatform.cs
+@@ -1191,14 +1191,14 @@ namespace Microsoft.Xna.Framework
+ 		private static Game emscriptenGame;
+ 		private delegate void em_callback_func();
+ 
+-		[DllImport("__Native", CallingConvention = CallingConvention.Cdecl)]
++		[DllImport("Emscripten", EntryPoint = "wasm_set_main_loop", CallingConvention = CallingConvention.Cdecl)]
+ 		private static extern void emscripten_set_main_loop(
+ 			em_callback_func func,
+ 			int fps,
+ 			int simulate_infinite_loop
+ 		);
+ 
+-		[DllImport("__Native", CallingConvention = CallingConvention.Cdecl)]
++		[DllImport("Emscripten", EntryPoint = "wasm_cancel_main_loop", CallingConvention = CallingConvention.Cdecl)]
+ 		private static extern void emscripten_cancel_main_loop();
+ 
+ 		[ObjCRuntime.MonoPInvokeCallback(typeof(em_callback_func))]

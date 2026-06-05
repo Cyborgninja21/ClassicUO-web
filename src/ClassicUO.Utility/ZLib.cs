@@ -14,7 +14,16 @@ namespace ClassicUO.Utility
 
         static ZLib()
         {
-            if (Environment.Is64BitProcess)
+            // WASM: wasm32 reports Is64BitProcess=false, which would pick the managed
+            // inflate (ManagedUniversal) — but that path throws "CRC mismatch" under the
+            // interpreter. The native zlib (libz.a) IS linked into the bundle, and
+            // Compressor64's int-based uncompress signature matches wasm32's 32-bit uLong,
+            // so use it directly.
+            if (OperatingSystem.IsBrowser())
+            {
+                _compressor = new WasmCompressor();
+            }
+            else if (Environment.Is64BitProcess)
             {
                 if(PlatformHelper.IsWindows)
                 {
@@ -73,6 +82,33 @@ namespace ClassicUO.Utility
             NeedDictionary = 2
         }
 
+
+        // WASM: decompress via the native libz.a uncompress() exposed as a named
+        // shim in build-wasm/loader/Emscripten.c (statically-linked symbol; the
+        // managed inflate throws "CRC mismatch" under the interpreter). ClassicUO
+        // only ever decompresses UOP entries, so Compress is unsupported.
+        private sealed class WasmCompressor : ICompressor
+        {
+            [DllImport("Emscripten", EntryPoint = "wasm_uncompress")]
+            private static extern ZLibError wasm_uncompress(IntPtr dest, ref int destLen, IntPtr source, int sourceLen);
+
+            public string Version => "wasm-zlib";
+
+            public ZLibError Compress(byte[] dest, ref int destLength, byte[] source, int sourceLength)
+                => throw new NotSupportedException();
+            public ZLibError Compress(byte[] dest, ref int destLength, byte[] source, int sourceLength, ZLibQuality quality)
+                => throw new NotSupportedException();
+
+            public unsafe ZLibError Decompress(byte[] dest, ref int destLength, byte[] source, int sourceLength)
+            {
+                fixed (byte* d = dest)
+                fixed (byte* s = source)
+                    return wasm_uncompress((IntPtr)d, ref destLength, (IntPtr)s, sourceLength);
+            }
+
+            public ZLibError Decompress(IntPtr dest, ref int destLength, IntPtr source, int sourceLength)
+                => wasm_uncompress(dest, ref destLength, source, sourceLength);
+        }
 
         private interface ICompressor
         {

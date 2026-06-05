@@ -18,4 +18,5 @@ apply() {
 }
 
 apply external/FNA/lib/SDL3-CS 001-sdl3cs-wasm-pinvoke-shims.patch
+apply external/FNA            002-fna-sdl3platform-wasm.patch
 echo "==> patches applied."
