@@ -10,3 +10,4 @@
 /build-wasm/*.png
 *.png
 /.uo-test-data/
+/.run/

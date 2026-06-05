@@ -1,6 +1,20 @@
 // Boot the ClassicUO-web WASM client (single-threaded), library mode.
 // UO art is fetched in JS and written to MEMFS via a synchronous JSExport (AOT-safe).
 import { dotnet } from './_framework/dotnet.js'
+
+// --- debug capture: keep a ring of recent log lines; on ANY uncaught error/rejection
+// dump the stack + recent context. Hard wasm traps ("memory access out of bounds")
+// otherwise print with no stack — this is how you get one. See DEBUGGING.md.
+const _ring = [];
+const _log = console.log.bind(console);
+console.log = (...a) => { try { _ring.push(a.join(' ')); if (_ring.length > 60) _ring.shift(); } catch {} _log(...a); };
+function _fatal(tag, e) {
+  const stack = (e && (e.stack || e.message)) || String(e);
+  _log(`[fatal] ${tag}: ${stack}\n--- last ${Math.min(_ring.length,20)} log lines ---\n${_ring.slice(-20).join('\n')}\n--- end ---`);
+}
+addEventListener('error', e => _fatal('window.onerror', e.error || e));
+addEventListener('unhandledrejection', e => _fatal('unhandledrejection', e.reason));
+
 const { getAssemblyExports, getConfig } = await dotnet.create();
 const exports = await getAssemblyExports(getConfig().mainAssemblyName);
 exports.ClassicUOLoader.Init();
@@ -25,5 +39,5 @@ try {
   exports.ClassicUOLoader.StartClassicUO(JSON.stringify(settings));
 } catch (e) {
   // emscripten simulate_infinite_loop throws "unwind" to hand the stack to rAF — expected.
-  if (!('' + e).includes('unwind')) console.error('[boot] ERROR', e);
+  if (!('' + e).includes('unwind')) _fatal('StartClassicUO', e);
 }
