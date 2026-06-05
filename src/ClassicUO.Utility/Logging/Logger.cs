@@ -68,7 +68,9 @@ namespace ClassicUO.Utility.Logging
 
         public void Clear()
         {
-            Console.Clear();
+            // Browser/WASM console does not support Clear() (throws PlatformNotSupportedException).
+            if (!OperatingSystem.IsBrowser())
+                Console.Clear();
         }
 
         public void PushIndent()
@@ -108,11 +110,20 @@ namespace ClassicUO.Utility.Logging
                 {
                     Console.Write(DateTime.UtcNow);
                     Console.Write(" | ");
-                    ConsoleColor temp = Console.ForegroundColor;
 
-                    Console.ForegroundColor = _logTypesInfo[type].Item1;
-                    Console.Write(_logTypesInfo[type].Item2);
-                    Console.ForegroundColor = temp;
+                    if (OperatingSystem.IsBrowser())
+                    {
+                        // Browser/WASM console has no color (Console.ForegroundColor throws).
+                        Console.Write(_logTypesInfo[type].Item2);
+                    }
+                    else
+                    {
+                        ConsoleColor temp = Console.ForegroundColor;
+                        Console.ForegroundColor = _logTypesInfo[type].Item1;
+                        Console.Write(_logTypesInfo[type].Item2);
+                        Console.ForegroundColor = temp;
+                    }
+
                     Console.Write(" | ");
 
                     if (_indent > 0)

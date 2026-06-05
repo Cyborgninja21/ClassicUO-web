@@ -55,6 +55,14 @@
     <NativeFileReference Include="Emscripten.c" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- ClassicUO client (transitively brings FNA.Core + Assets/Renderer/Utility).
+         Override OutputType=Library + drop NativeAOT for this reference only, so the
+         self-contained wasm app can consume it (NETSDK1150). Desktop build untouched. -->
+    <ProjectReference Include="..\..\src\ClassicUO.Client\ClassicUO.Client.csproj"
+                      AdditionalProperties="OutputType=Library;PublishAot=false;SelfContained=false" />
+  </ItemGroup>
+
   <Target Name="UpdateRuntimePack" AfterTargets="ResolveFrameworkReferences">
     <ItemGroup>
       <ResolvedRuntimePack PackageDirectory="$(MicrosoftNetCoreAppRuntimePackDir)"

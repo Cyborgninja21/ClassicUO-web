@@ -1,10 +1,13 @@
-// Minimal boot for the ClassicUO-web WASM loader (single-threaded).
-// Smoke stage: just run managed Main. Next stages add OPFS mount + FNA/ClassicUO start.
+// Boot the ClassicUO-web WASM client (single-threaded). Library mode: never
+// call dotnet.run() (it exits on Main return) — call exports directly so the
+// runtime stays alive for FNA's emscripten main loop.
 import { dotnet } from './_framework/dotnet.js'
 try {
-  await dotnet.create();
-  await dotnet.run();
-  console.log('[boot] dotnet.run() returned');
+  const { getAssemblyExports, getConfig } = await dotnet.create();
+  const exports = await getAssemblyExports(getConfig().mainAssemblyName);
+  exports.ClassicUOLoader.Init();
+  console.log('[boot] starting ClassicUO');
+  exports.ClassicUOLoader.StartClassicUO();
 } catch (e) {
-  console.log('[boot] ERROR ' + e);
+  console.log('[boot] ERROR ' + (e && e.stack ? e.stack : e));
 }
