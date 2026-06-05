@@ -1,0 +1,101 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <!-- ClassicUO-web WASM loader. Single-threaded. Adapted from celeste-wasm
+       (threads-v2) loader/CelesteLoader.csproj, stripped of MonoMod/FMOD/Steam/Lua.
+       Uses the MATCHED FNA-WASM-Build runtime pack (../statics/dotnet) + frozen
+       emsdk (../statics/emsdk/emsdk) — NOT the stock wasm-tools toolchain.
+       See ../BUILD-WASM.md. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AssemblyName>ClassicUOLoader</AssemblyName>
+    <StartupObject>ClassicUOLoader</StartupObject>
+
+    <CompressionEnabled>false</CompressionEnabled>
+    <PublishTrimmed>false</PublishTrimmed>
+
+    <!-- single-threaded: no COOP/COEP, no workers, no OffscreenCanvas -->
+    <WasmEnableThreads>false</WasmEnableThreads>
+    <WasmEnableSIMD>true</WasmEnableSIMD>
+    <WasmEnableExceptionHandling>true</WasmEnableExceptionHandling>
+    <WasmEnableWebcil>false</WasmEnableWebcil>
+    <WasmBuildNative>true</WasmBuildNative>
+    <WasmRunWasmOpt>true</WasmRunWasmOpt>
+    <!-- AOT off for the first smoke build (faster); flip on + add AOTWhitelist once it boots -->
+    <RunAOTCompilation>false</RunAOTCompilation>
+    <WasmNativeStrip>false</WasmNativeStrip>
+
+    <EmccExtraLDFlags>-sMIN_WEBGL_VERSION=2 -sWASMFS -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294901760 -sMALLOC=mimalloc</EmccExtraLDFlags>
+    <EmccEnvironment>web</EmccEnvironment>
+    <WebAssemblyEnableStreamingResponse>true</WebAssemblyEnableStreamingResponse>
+
+    <!-- frozen emsdk (matches the native libs + runtime) -->
+    <EmsdkRoot>$(MSBuildProjectDirectory)/../statics/emsdk/emsdk/</EmsdkRoot>
+    <WasmCachePath>$(EmsdkRoot)emscripten/cache/</WasmCachePath>
+    <__EmscriptenSdkToolsPath>$(EmsdkRoot)</__EmscriptenSdkToolsPath>
+    <__EmscriptenUpstreamBinPath>$(EmsdkRoot)bin/</__EmscriptenUpstreamBinPath>
+    <__EmscriptenUpstreamEmscriptenPath>$(EmsdkRoot)emscripten/</__EmscriptenUpstreamEmscriptenPath>
+    <__EmscriptenNodeToolsPath>$(EmsdkRoot)node/bin/node</__EmscriptenNodeToolsPath>
+    <__WasmClang>$(EmsdkRoot)emscripten/emcc</__WasmClang>
+
+    <!-- matched custom runtime pack -->
+    <MicrosoftNetCoreAppRuntimePackDir>$(MSBuildProjectDirectory)/../statics/dotnet</MicrosoftNetCoreAppRuntimePackDir>
+    <MicrosoftNetCoreAppRuntimePackRidDir>$(MicrosoftNetCoreAppRuntimePackDir)/runtimes/browser-wasm</MicrosoftNetCoreAppRuntimePackRidDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- FNA native libs (single-threaded ST- variants, prefix dropped by fetch-statics.sh) -->
+    <NativeFileReference Include="..\statics\SDL3.a" />
+    <NativeFileReference Include="..\statics\FNA3D.a" />
+    <NativeFileReference Include="..\statics\libmojoshader.a" />
+    <NativeFileReference Include="..\statics\FAudio.a" />
+    <!-- WASMFS (OPFS/fetch) + SDL3 flag-ABI shims -->
+    <NativeFileReference Include="Emscripten.c" />
+  </ItemGroup>
+
+  <Target Name="UpdateRuntimePack" AfterTargets="ResolveFrameworkReferences">
+    <ItemGroup>
+      <ResolvedRuntimePack PackageDirectory="$(MicrosoftNetCoreAppRuntimePackDir)"
+        Condition="'%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.NETCore.App'" />
+    </ItemGroup>
+    <Message Text="Using custom runtime pack: %(ResolvedRuntimePack.PackageDirectory)" Importance="High" />
+  </Target>
+
+  <!-- Force the SDK to use the frozen emsdk instead of its bundled one. (celeste pattern) -->
+  <Target Name="ChangeClang" DependsOnTargets="_InitializeCommonProperties" BeforeTargets="_SetupEmscripten">
+    <PropertyGroup>
+      <EmscriptenSdkToolsPath>$(__EmscriptenSdkToolsPath)</EmscriptenSdkToolsPath>
+      <EmscriptenUpstreamBinPath>$(__EmscriptenUpstreamBinPath)</EmscriptenUpstreamBinPath>
+      <EmscriptenUpstreamEmscriptenPath>$(__EmscriptenUpstreamEmscriptenPath)</EmscriptenUpstreamEmscriptenPath>
+      <EmscriptenNodeToolsPath>$(__EmscriptenNodeToolsPath)</EmscriptenNodeToolsPath>
+      <WasmClang>$(__WasmClang)</WasmClang>
+    </PropertyGroup>
+    <ItemGroup>
+      <EmscriptenPrependPATH Remove="/usr/share/dotnet/packs/*" />
+      <EmscriptenPrependPATH Include="$(EmscriptenSdkToolsPath)" />
+      <EmscriptenPrependPATH Include="$(EmscriptenUpstreamBinPath)" />
+      <EmscriptenPrependPATH Include="$([MSBuild]::NormalizeDirectory($(EmscriptenSdkToolsPath), 'emscripten'))" />
+      <EmscriptenPrependPATH Include="$(EmscriptenNodeToolsPath)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="ChangeClang2" DependsOnTargets="_GenerateManagedToNative" BeforeTargets="_WasmCompileNativeSourceFiles">
+    <PropertyGroup>
+      <EmscriptenSdkToolsPath>$(__EmscriptenSdkToolsPath)</EmscriptenSdkToolsPath>
+      <EmscriptenUpstreamBinPath>$(__EmscriptenUpstreamBinPath)</EmscriptenUpstreamBinPath>
+      <EmscriptenUpstreamEmscriptenPath>$(__EmscriptenUpstreamEmscriptenPath)</EmscriptenUpstreamEmscriptenPath>
+      <EmscriptenNodeToolsPath>$(__EmscriptenNodeToolsPath)</EmscriptenNodeToolsPath>
+      <WasmClang>$(__WasmClang)</WasmClang>
+    </PropertyGroup>
+    <ItemGroup>
+      <EmscriptenPrependPATH Remove="/usr/share/dotnet/packs/*" />
+      <EmscriptenPrependPATH Include="$(EmscriptenSdkToolsPath)" />
+      <EmscriptenPrependPATH Include="$(EmscriptenUpstreamBinPath)" />
+      <EmscriptenPrependPATH Include="$([MSBuild]::NormalizeDirectory($(EmscriptenSdkToolsPath), 'emscripten'))" />
+      <EmscriptenPrependPATH Include="$(EmscriptenNodeToolsPath)" />
+      <EmscriptenEnvVars Include="PATH=$(EmscriptenSdkToolsPath):$(EmscriptenUpstreamBinPath):$([MSBuild]::NormalizeDirectory($(EmscriptenSdkToolsPath), 'emscripten')):$(EmscriptenNodeToolsPath):$(PATH)" />
+    </ItemGroup>
+  </Target>
+</Project>

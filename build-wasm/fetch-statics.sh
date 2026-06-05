@@ -32,6 +32,10 @@ python3 -c "import zipfile; zipfile.ZipFile('_dotnet/ST-dotnet.zip').extractall(
 echo "==> frozen emsdk (large; ~1GB)"
 python3 -c "import zipfile; zipfile.ZipFile('_emsdk/emsdk.zip').extractall('emsdk')"
 
+echo "==> restore exec bits (python zipfile.extractall drops them)"
+chmod -R +x emsdk/emsdk/bin emsdk/emsdk/node emsdk/emsdk/emscripten 2>/dev/null || true
+chmod +x dotnet/cross/mono-aot-cross 2>/dev/null || true
+
 rm -rf _libs _dotnet _emsdk
 echo "==> done. statics/:"
 ls -1

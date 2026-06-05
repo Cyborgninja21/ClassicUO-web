@@ -15,7 +15,9 @@ top of pinned upstream ClassicUO; the desktop client is untouched.
 | Fork pinned to upstream `12ffabda` (ClassicUO-main-release, 2026-06-02) | ✅ |
 | Toolchain reverse-engineered from celeste-wasm + FNA-WASM-Build | ✅ |
 | Native libs + runtime + emsdk staged (`fetch-statics.sh`) | ✅ |
-| `loader/` WASM project builds | 🔲 in progress |
+| `loader/` WASM project builds (custom runtime + emsdk + FNA native libs link) | ✅ 2026-06-05 |
+| Runtime boots + runs managed C# in Chrome (smoke `Main`) | ✅ 2026-06-05 |
+| FNA + ClassicUO referenced; OPFS art; selective AOT | 🔲 in progress |
 | Boots to login screen in Chrome | 🔲 |
 
 ## Design decisions
