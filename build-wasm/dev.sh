@@ -138,11 +138,21 @@ shot(){
 
 logs(){ filter_console < "$RUN/console.log" | tail -60; }
 
-# sym '<idx idx ...>' : map wasm function indices (from a stack) to names via the symbol map
+# sym '<idx idx ...>' : map wasm function indices (from a [fatal] stack) to names.
+# The map (index:name) is emitted as dotnet.native.js.symbols under obj/. If it's
+# missing, force a native relink: rm -rf loader/obj/.../wasm && ./dev.sh build debug.
 sym(){
-  local map; map="$(ls -t "$PUB"/_framework/dotnet.native.*.wasm.symbols 2>/dev/null | head -1)"
-  [ -f "$map" ] || { err "no symbol map — build with: ./dev.sh build debug"; return 1; }
-  for idx in $1; do printf '%8s  %s\n' "$idx" "$(awk -v i="$idx" '$1==i{print $2; exit}' "$map")"; done
+  local map; map="$(ls -t "$HERE"/loader/obj/Release/net10.0/wasm/for-publish/dotnet.native.js.symbols 2>/dev/null | head -1)"
+  if [ ! -f "$map" ]; then
+    # fall back to regenerating it from the wasm
+    local w; w="$(ls "$PUB"/_framework/dotnet.native.*.wasm 2>/dev/null | head -1)"
+    [ -f "$w" ] || { err "no wasm — build first"; return 1; }
+    map="$RUN/funcmap.txt"
+    "$HERE"/statics/emsdk/emsdk/bin/wasm-opt --print-function-map --quiet "$w" \
+      --enable-threads --enable-bulk-memory --enable-exception-handling --enable-multivalue \
+      --enable-mutable-globals --enable-reference-types --enable-sign-ext --enable-simd 2>/dev/null > "$map"
+  fi
+  for idx in $1; do printf '[%6s] %s\n' "$idx" "$(awk -F: -v i="$idx" '$1==i{print $2; exit}' "$map")"; done
 }
 
 cmd="${1:-}"; shift || true
