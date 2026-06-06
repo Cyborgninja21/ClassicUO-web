@@ -82,11 +82,20 @@ function beacon(type, extra) {
 }
 
 function _fatal(tag, e) {
-  if (diag.crashed) return;          // first fatal wins; avoid a beacon storm
-  diag.crashed = true;
   const stack = (e && (e.stack || e.message)) || String(e);
+  const msg = String((e && e.message) || e);
+  // The .NET runtime probes for optional resources (satellite assemblies, etc.) and
+  // handles the 404 itself, but the rejection still bubbles here. Not an app crash —
+  // log quietly, and crucially DON'T latch (else it suppresses the real error).
+  if (/Failed to fetch/i.test(msg) && /dotnet(\.native)?\.js/.test(stack)) {
+    _log('[diag] benign runtime fetch rejection ignored: ' + msg);
+    return;
+  }
+  // Always log every fatal (a later, different error must still surface); beacon once.
   _log(`[fatal] ${tag}: ${stack}\n--- last ${Math.min(_ring.length, 20)} log lines ---\n${_ring.slice(-20).join('\n')}\n--- end ---`);
-  beacon('crash', { tag, message: String((e && e.message) || e), stack, wasm_frames: wasmFrames(stack), ring: _ring.slice(-20) });
+  if (diag.crashed) return;
+  diag.crashed = true;
+  beacon('crash', { tag, message: msg, stack, wasm_frames: wasmFrames(stack), ring: _ring.slice(-20) });
   // Surface a one-click BugPin report pre-filled with this envelope (plan §3.5).
   try { window.UO_onFatal && window.UO_onFatal({ tag, stack, phase: diag.phase, frame: diag.frame, session: diag.session, build_sha: diag.build_sha }); } catch {}
 }
@@ -102,9 +111,13 @@ setInterval(() => {
   const sincePhase = now - diag.phaseTs;
   const sinceTick = now - diag.lastTickTs;
   const ticking = diag.frame > 0;
+  // A "waiting" network phase that never advances = the login handshake wedged (e.g.
+  // connected but no server list). Frames keep ticking, so the frame-stop check misses it.
+  const WAITING = ['ws-connecting', 'ws-open', 'server-select'];
   const stalled =
-    (ticking && diag.phase !== 'in-world' && sinceTick > 5000) ||  // frames stopped
-    (!ticking && sincePhase > 12000);                              // never reached the loop
+    (ticking && diag.phase !== 'in-world' && sinceTick > 5000) ||       // frames stopped
+    (!ticking && sincePhase > 12000) ||                                 // never reached the loop
+    (WAITING.includes(diag.phase) && sincePhase > 15000);               // handshake wedged
   if (stalled && !diag.stallReported) {
     diag.stallReported = true;
     beacon('stall', { since_phase_ms: Math.round(sincePhase), since_tick_ms: Math.round(sinceTick), ticking, ring: _ring.slice(-20) });
@@ -118,9 +131,29 @@ setInterval(() => {
 try { diag.build_sha = (await (await fetch('/build-info.json')).json()).sha || 'dev'; } catch {}
 _log('[boot] build ' + diag.build_sha + ' session ' + diag.session);
 
-const { getAssemblyExports, getConfig } = await dotnet.create();
+const { getAssemblyExports, getConfig, setModuleImports } = await dotnet.create();
 const exports = await getAssemblyExports(getConfig().mainAssemblyName);
 setPhase('runtime-up');
+
+// JS-interop WebSocket (module "uo-ws", driven by WasmWebSocketBridge in managed code).
+// A plain JS WebSocket owned here, bytes crossing synchronously — bypasses
+// ClientWebSocket whose async dies on the .NET-WASM threadpool reverse-pinvoke under AOT.
+let _ws = null;
+setModuleImports('uo-ws', {
+  wsOpen: (url) => {
+    try { _ws && _ws.close(); } catch {}
+    try {
+      _ws = new WebSocket(url);
+      _ws.binaryType = 'arraybuffer';
+      _ws.onopen = () => { try { exports.ClassicUOLoader.WsOnOpen(); } catch (e) { _fatal('WsOnOpen', e); } };
+      _ws.onmessage = (ev) => { try { exports.ClassicUOLoader.WsOnMessage(new Uint8Array(ev.data)); } catch (e) { _fatal('WsOnMessage', e); } };
+      _ws.onclose = () => { try { exports.ClassicUOLoader.WsOnClose(); } catch {} };
+      _ws.onerror = () => { try { exports.ClassicUOLoader.WsOnError(); } catch {} };
+    } catch (e) { _fatal('wsOpen', e); try { exports.ClassicUOLoader.WsOnError(); } catch {} }
+  },
+  wsSend: (data) => { try { if (_ws && _ws.readyState === 1) _ws.send(data); } catch (e) { _fatal('wsSend', e); } },
+  wsClose: () => { try { _ws && _ws.close(); } catch {} _ws = null; },
+});
 exports.ClassicUOLoader.Init();
 exports.ClassicUOLoader.MkUODir();
 const base = new URL('/uo-data/', location.href).href;

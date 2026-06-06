@@ -25,7 +25,31 @@ public static partial class ClassicUOLoader
             if (name == "SDL2") name = "SDL3";
             return NativeLibrary.Load(name, assembly, null);
         };
+
+        // Wire ClassicUO's WebSocket seam to the JS WebSocket (see WasmWebSocketBridge):
+        // ClientWebSocket's async dies on the threadpool reverse-pinvoke under AOT.
+        ClassicUO.Network.Socket.WasmWebSocketBridge.Open = WsOpen;
+        ClassicUO.Network.Socket.WasmWebSocketBridge.Send = (data, _) => WsSend(data);
+        ClassicUO.Network.Socket.WasmWebSocketBridge.Close = WsClose;
     }
+
+    // --- JS-interop WebSocket. The "uo-ws" module (main.js, setModuleImports) owns a
+    // plain JS WebSocket; bytes cross synchronously, no .NET async, no threadpool. ---
+    [JSImport("wsOpen", "uo-ws")]
+    internal static partial void WsOpen(string url);
+    [JSImport("wsSend", "uo-ws")]
+    internal static partial void WsSend(byte[] data);
+    [JSImport("wsClose", "uo-ws")]
+    internal static partial void WsClose();
+
+    [JSExport]
+    public static void WsOnOpen() => ClassicUO.Network.Socket.WasmWebSocketBridge.OnOpen?.Invoke();
+    [JSExport]
+    public static void WsOnMessage(byte[] data) => ClassicUO.Network.Socket.WasmWebSocketBridge.OnMessage?.Invoke(data);
+    [JSExport]
+    public static void WsOnClose() => ClassicUO.Network.Socket.WasmWebSocketBridge.OnClose?.Invoke();
+    [JSExport]
+    public static void WsOnError() => ClassicUO.Network.Socket.WasmWebSocketBridge.OnError?.Invoke();
 
     // UO art preload: JS does the fetch (async, JS-native) and hands each file's
     // bytes to this SYNCHRONOUS writer. No .NET Task/async in the managed path, so

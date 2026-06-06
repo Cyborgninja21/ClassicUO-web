@@ -22,8 +22,12 @@ sealed class WebSocketWrapper : SocketWrapper
 
     private ClientWebSocket _webSocket;
     private TcpSocket _rawSocket;
+    private bool _browserConnected;
+    private bool _browserConnecting;
 
-    public override bool IsConnected => _webSocket?.State is WebSocketState.Connecting or WebSocketState.Open;
+    public override bool IsConnected => OperatingSystem.IsBrowser()
+        ? (_browserConnected || _browserConnecting)
+        : (_webSocket?.State is WebSocketState.Connecting or WebSocketState.Open);
     public override EndPoint LocalEndPoint => _rawSocket?.LocalEndPoint;
     public bool IsCanceled => _tokenSource.IsCancellationRequested;
 
@@ -32,18 +36,89 @@ sealed class WebSocketWrapper : SocketWrapper
 
     public override void Connect(Uri uri)
     {
-        // Single-threaded wasm can't block on async — .Wait() has no thread to run the
-        // continuation (deadlock/trap). Fire-and-forget; the async connect + receive are
-        // pumped by the JS event loop between rAF frames, and OnConnected/OnError drive
-        // the login flow. Desktop keeps the synchronous behavior.
+        // Browser: drive a plain JS WebSocket through WasmWebSocketBridge. ClientWebSocket's
+        // async would queue continuations on the .NET-WASM threadpool, whose background-job
+        // reverse-pinvoke trampoline mismatches under AOT and kills the runtime on connect.
+        // The bridge is fully synchronous + event-driven — no .NET async, no threadpool.
         if (OperatingSystem.IsBrowser())
-            _ = ConnectAsync(uri, _tokenSource);
-        else
-            ConnectAsync(uri, _tokenSource).Wait();
+        {
+            ConnectBrowser(uri);
+            return;
+        }
+
+        ConnectAsync(uri, _tokenSource).Wait();
+    }
+
+    private void ConnectBrowser(Uri uri)
+    {
+        _receiveStream = new CircularBuffer();
+        _browserConnected = false;
+        _browserConnecting = true;
+
+        if (WasmWebSocketBridge.Open == null)
+        {
+            Log.Error("WasmWebSocketBridge not wired by the loader — cannot open a WebSocket in wasm");
+            _browserConnecting = false;
+            InvokeOnError(SocketError.SocketError);
+            return;
+        }
+
+        WasmWebSocketBridge.OnOpen = () =>
+        {
+            _browserConnected = true;
+            _browserConnecting = false;
+            Log.Trace($"Connected WebSocket (browser): {uri}");
+            InvokeOnConnected();
+        };
+        WasmWebSocketBridge.OnMessage = data =>
+        {
+            if (data == null || data.Length == 0)
+                return;
+            lock (_receiveStream)
+            {
+                _receiveStream.Enqueue(data, 0, data.Length);
+            }
+        };
+        WasmWebSocketBridge.OnClose = () =>
+        {
+            bool wasUp = _browserConnected || _browserConnecting;
+            _browserConnected = false;
+            _browserConnecting = false;
+            if (wasUp && !IsCanceled)
+                InvokeOnError(SocketError.ConnectionReset);
+        };
+        WasmWebSocketBridge.OnError = () =>
+        {
+            _browserConnected = false;
+            _browserConnecting = false;
+            InvokeOnError(SocketError.SocketError);
+        };
+
+        Log.Trace($"Connecting to {uri} (browser JS WebSocket)");
+        WasmWebSocketBridge.Open(uri.ToString());
     }
 
     public override void Send(byte[] buffer, int offset, int count)
     {
+        if (OperatingSystem.IsBrowser())
+        {
+            // Synchronous hand-off to the JS WebSocket (no .NET async / threadpool).
+            if (!_browserConnected || WasmWebSocketBridge.Send == null)
+                return;
+            byte[] frame;
+            if (offset == 0 && count == buffer.Length)
+            {
+                frame = buffer;
+            }
+            else
+            {
+                frame = new byte[count];
+                Buffer.BlockCopy(buffer, offset, frame, 0, count);
+            }
+            WasmWebSocketBridge.Send(frame, count);
+            return;
+        }
+
         var copy = Shared.Rent(count);
         Buffer.BlockCopy(buffer, offset, copy, 0, count);
         SendCopyAsync(copy, count);
@@ -248,6 +323,15 @@ sealed class WebSocketWrapper : SocketWrapper
 
     public override void Disconnect()
     {
+        if (OperatingSystem.IsBrowser())
+        {
+            _browserConnected = false;
+            _browserConnecting = false;
+            try { WasmWebSocketBridge.Close?.Invoke(); } catch { }
+            _tokenSource?.Cancel();
+            return;
+        }
+
         if (!IsConnected)
             return;
 

@@ -664,28 +664,49 @@ namespace ClassicUO.Game.Scenes
             NetClient.Socket.Disconnect();
             NetClient.Socket.Connected -= OnNetClientConnected;
 
+            // Where to dial: ignore the relay IP for websocket proxying (re-dial the one WSS URL).
+            bool ignoreIp = Settings.GlobalSettings.IgnoreRelayIp || ip == 0;
+            string host = ignoreIp ? Settings.GlobalSettings.IP : new IPAddress(ip).ToString();
+            ushort dialPort = ignoreIp ? Settings.GlobalSettings.Port : port;
+            if (ignoreIp)
+                Log.Trace("Ignoring relay server packet IP address");
+
+            // The game-server handshake: seed key (raw 4 bytes) then 0x91 game login.
+            void SendGameLogin()
+            {
+                NetClient.Socket.Encryption?.Initialize(false, seed);
+                NetClient.Socket.EnableCompression();
+                Span<byte> b = stackalloc byte[4] { (byte)(seed >> 24), (byte)(seed >> 16), (byte)(seed >> 8), (byte)seed };
+                NetClient.Socket.Send(b, true, true);
+                NetClient.Socket.Send_SecondLogin(Account, Password, seed);
+            }
+
+            if (OperatingSystem.IsBrowser())
+            {
+                // The browser WebSocket connects ASYNCHRONOUSLY — unlike desktop, the socket
+                // is not open synchronously after Connect(). Sending the game login inline here
+                // would be dropped (ws not open), and the later open event would re-run the
+                // ACCOUNT login (0xEF/0x80) instead — looping back to the server list. So defer
+                // the game login (seed + 0x91) to the connect/open event.
+                EventHandler onGameServerOpen = null;
+                onGameServerOpen = (s, e) =>
+                {
+                    NetClient.Socket.Connected -= onGameServerOpen;
+                    SendGameLogin();
+                    NetClient.Socket.Connected += OnNetClientConnected; // restore for future reconnects
+                };
+                NetClient.Socket.Connected += onGameServerOpen;
+                NetClient.Socket.Connect(host, dialPort);
+                return;
+            }
+
             try
             {
-                // Ignore the packet, connect with the original IP regardless (i.e. websocket proxying)
-                if (Settings.GlobalSettings.IgnoreRelayIp || ip == 0)
-                {
-                    Log.Trace("Ignoring relay server packet IP address");
-                    NetClient.Socket.Connect(Settings.GlobalSettings.IP, Settings.GlobalSettings.Port);
-                }
-                else
-                    NetClient.Socket.Connect(new IPAddress(ip).ToString(), port);
+                NetClient.Socket.Connect(host, dialPort);
 
                 if (NetClient.Socket.IsConnected)
                 {
-                    NetClient.Socket.Encryption?.Initialize(false, seed);
-                    NetClient.Socket.EnableCompression();
-                    unsafe
-                    {
-                        Span<byte> b = stackalloc byte[4] { (byte)(seed >> 24), (byte)(seed >> 16), (byte)(seed >> 8), (byte)seed };
-                        NetClient.Socket.Send(b, true, true);
-                    }
-
-                    NetClient.Socket.Send_SecondLogin(Account, Password, seed);
+                    SendGameLogin();
                 }
             }
             finally
@@ -915,7 +936,11 @@ namespace ClassicUO.Game.Scenes
     {
         private IPAddress _ipAddress;
         private IPAddress _ipAddressLittleEndian;
-        private Ping _pinger = new Ping();
+        // System.Net.NetworkInformation.Ping is unsupported in WASM (ICMP). Server-latency
+        // display is cosmetic, so the pinger stays null on browser (DoPing/Dispose already
+        // null-guard it). Without this, the static cctor below throws TypeInitialization and
+        // the whole server-list packet fails to parse.
+        private Ping _pinger = OperatingSystem.IsBrowser() ? null : new Ping();
         private bool _sending;
         private readonly bool[] _last10Results = new bool[10];
         private int _resultIndex;
@@ -967,7 +992,8 @@ namespace ClassicUO.Game.Scenes
                 Log.Error(e.ToString());
             }
 
-            entry._pinger.PingCompleted += entry.PingerOnPingCompleted;
+            if (entry._pinger != null)
+                entry._pinger.PingCompleted += entry.PingerOnPingCompleted;
 
             return entry;
         }
@@ -983,7 +1009,8 @@ namespace ClassicUO.Game.Scenes
         public IPStatus PingStatus;
 
         private static byte[] _buffData = new byte[32];
-        private static PingOptions _pingOptions = new PingOptions(64, true);
+        // null on browser — see _pinger. This static init is the TypeInitialization throw.
+        private static PingOptions _pingOptions = OperatingSystem.IsBrowser() ? null : new PingOptions(64, true);
 
         public void DoPing()
         {
