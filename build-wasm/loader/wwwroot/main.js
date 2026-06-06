@@ -215,17 +215,29 @@ async function loadFromOpfs() {
   }
 }
 
-// Dev fallback: the /uo-data/ art server (harness). Guarded — returns false if the
-// path 404s to the SPA fallback (production has no /uo-data/), so it never crashes.
+// Operator-hosted art (Plan W7): the `/uo-data/` server set. Guarded — returns
+// false if the path 404s to the SPA fallback (no server art configured), so it
+// never crashes and the picker still takes over. On success it ALSO caches every
+// file into OPFS, so the *next* visit loads instantly from cache (loadFromOpfs)
+// with no multi-GB re-download — the same one-time cost the picker pays.
 async function loadFromDevServer() {
   try {
     const r = await fetch('/uo-data/manifest.json');
     if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return false;
-    const list = await r.json();
+    const list = (await r.json()).filter(f => f && f !== 'manifest.json');
+    if (!list.length) return false;
     const baseUrl = new URL('/uo-data/', location.href).href;
+    artStatus('downloading art (one time)…');
+    let dir = null;
+    try { dir = await opfsArtDir(true); } catch { dir = null; }   // OPFS cache is best-effort
+    let i = 0;
     for (const f of list) {
-      if (f === 'manifest.json') continue;
-      exports.ClassicUOLoader.WriteUOFile('/uo/' + f, new Uint8Array(await (await fetch(baseUrl + f)).arrayBuffer()));
+      const resp = await fetch(baseUrl + f);
+      if (!resp.ok) throw new Error('art fetch ' + f + ' -> ' + resp.status);
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
+      if (dir) { try { await opfsWrite(dir, f, buf); } catch {} }  // cache for next visit
+      artStatus('downloading art (one time)… ' + (++i) + '/' + list.length + ' (' + f + ')');
     }
     return true;
   } catch { return false; }
