@@ -49,12 +49,39 @@ public static partial class ClassicUOLoader
             // settings.json at ExecutablePath (= Environment.CurrentDirectory = "/").
             File.WriteAllText("/settings.json", settingsJson);
             Console.WriteLine("[loader] wrote /settings.json; starting ClassicUO");
-            ClassicUO.WebEntry.Start(new string[] { });
-            Console.WriteLine("[loader] ClassicUO.WebEntry.Start returned");
+
+            // When the config requests autologin, skip the login screen so the connect
+            // fires on a fresh start (ClassicUO's in-Load autologin is gated on
+            // SkipLoginScreen, set only by the -skiploginscreen arg).
+            var args = new System.Collections.Generic.List<string>();
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(settingsJson);
+                if (doc.RootElement.TryGetProperty("autologin", out var al) &&
+                    al.ValueKind == System.Text.Json.JsonValueKind.True)
+                {
+                    args.Add("-skiploginscreen");
+                }
+            }
+            catch { /* settings without autologin: just show the login screen */ }
+
+            // Returns (via unwind) after init now — the WASM main loop is JS-driven via
+            // TickFrame(), not emscripten_set_main_loop. main.js starts the rAF pump.
+            ClassicUO.WebEntry.Start(args.ToArray());
+            Console.WriteLine("[loader] ClassicUO init done — JS now drives frames via TickFrame()");
         }
-        catch (Exception e)
+        catch (Exception e) when (e.Message == null || !e.Message.Contains("unwind"))
         {
             Console.WriteLine("[ClassicUOLoader] ClassicUO start ERROR:\n" + e);
         }
+        // An "unwind" exception is FNA handing the stack to the JS event loop after init
+        // (see SDL3_FNAPlatform.RunPlatformMainLoop) — let it propagate so main.js starts
+        // the rAF frame pump. The game stays alive; JS drives it via TickFrame().
     }
+
+    // One FNA frame (Update + Draw). JS calls this from requestAnimationFrame because
+    // single-threaded WASM AOT can't wire emscripten_set_main_loop's reverse-pinvoke
+    // callback. Returns false once the game exits so JS can stop the rAF pump.
+    [JSExport]
+    public static bool TickFrame() => Microsoft.Xna.Framework.WasmMainLoop.Tick();
 }

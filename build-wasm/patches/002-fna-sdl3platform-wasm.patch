@@ -1,8 +1,30 @@
 diff --git a/src/FNAPlatform/SDL3_FNAPlatform.cs b/src/FNAPlatform/SDL3_FNAPlatform.cs
-index f92ab2d..8d70003 100644
+index f92ab2d..caa879a 100644
 --- a/src/FNAPlatform/SDL3_FNAPlatform.cs
 +++ b/src/FNAPlatform/SDL3_FNAPlatform.cs
-@@ -1191,14 +1191,14 @@ namespace Microsoft.Xna.Framework
+@@ -1169,12 +1169,16 @@ namespace Microsoft.Xna.Framework
+ 		{
+ 			if (SDL.SDL_GetPlatform().Equals("Emscripten"))
+ 			{
++				// Single-threaded WASM AOT: passing the managed RunEmscriptenMainLoop to
++				// emscripten_set_main_loop trips a reverse-pinvoke `function signature
++				// mismatch` when the browser's rAF calls it each frame. Instead store the
++				// game, then unwind to the JS event loop. RunLoop() expects this call to
++				// never return (the line below it is `while (RunApplication) Tick()`, a
++				// blocking loop that would freeze the single thread); unwinding abandons the
++				// C# stack so the game stays alive (and Client.cs's `using` never disposes
++				// it). The JS loader then drives frames via WasmMainLoop.Tick() from rAF.
+ 				emscriptenGame = game;
+-				emscripten_set_main_loop(
+-					RunEmscriptenMainLoop,
+-					0,
+-					1
+-				);
++				emscripten_unwind_to_js_event_loop();
+ 			}
+ 			else
+ 			{
+@@ -1191,16 +1195,19 @@ namespace Microsoft.Xna.Framework
  		private static Game emscriptenGame;
  		private delegate void em_callback_func();
  
@@ -18,4 +40,52 @@ index f92ab2d..8d70003 100644
 +		[DllImport("Emscripten", EntryPoint = "wasm_cancel_main_loop", CallingConvention = CallingConvention.Cdecl)]
  		private static extern void emscripten_cancel_main_loop();
  
++		[DllImport("Emscripten", EntryPoint = "wasm_unwind_to_js_event_loop", CallingConvention = CallingConvention.Cdecl)]
++		private static extern void emscripten_unwind_to_js_event_loop();
++
  		[ObjCRuntime.MonoPInvokeCallback(typeof(em_callback_func))]
+ 		private static void RunEmscriptenMainLoop()
+ 		{
+@@ -1214,6 +1221,23 @@ namespace Microsoft.Xna.Framework
+ 			}
+ 		}
+ 
++		// JS-driven single frame (rAF pump). True while the game is still running.
++		internal static bool TickEmscriptenFrame()
++		{
++			if (emscriptenGame == null)
++			{
++				return false;
++			}
++			emscriptenGame.RunOneFrame();
++			if (!emscriptenGame.RunApplication)
++			{
++				emscriptenGame.Exit();
++				emscriptenGame = null;
++				return false;
++			}
++			return true;
++		}
++
+ 		#endregion
+ 
+ 		#region Graphics Methods
+@@ -2761,4 +2785,18 @@ namespace Microsoft.Xna.Framework
+ 
+ 		#endregion
+ 	}
++
++	/// <summary>
++	/// Public seam for the WASM/browser loader to drive FNA's frame loop from JS
++	/// requestAnimationFrame. Needed because single-threaded WASM AOT can't wire the
++	/// native emscripten_set_main_loop reverse-pinvoke callback (signature mismatch).
++	/// </summary>
++	public static class WasmMainLoop
++	{
++		/// <summary>Runs one game frame. Returns false once the game has exited.</summary>
++		public static bool Tick()
++		{
++			return SDL3_FNAPlatform.TickEmscriptenFrame();
++		}
++	}
+ }

@@ -45,11 +45,21 @@ uint32_t SDL__GetWindowFlags(void *window) {
 // FNA declares these as DllImport("__Native"), which doesn't resolve as a static
 // wasm lib. Expose them under named symbols (resolved like the SDL/zlib shims).
 #include <emscripten.h>
+// Declared in <emscripten/eventloop.h>; forward-declare to avoid header-path drift.
+extern void emscripten_unwind_to_js_event_loop(void);
 void wasm_set_main_loop(void (*func)(void), int fps, int simulate_infinite_loop) {
 	emscripten_set_main_loop(func, fps, simulate_infinite_loop);
 }
 void wasm_cancel_main_loop(void) {
 	emscripten_cancel_main_loop();
+}
+// Abandon the current C/.NET call stack and return to the JS event loop, keeping the
+// wasm runtime alive (throws the emscripten "unwind" exception). FNA's emscripten path
+// expects RunPlatformMainLoop to never return; single-threaded AOT can't register the
+// per-frame reverse-pinvoke callback, so instead we unwind here and let JS drive frames
+// via requestAnimationFrame -> ClassicUOLoader.TickFrame() on the still-alive game.
+void wasm_unwind_to_js_event_loop(void) {
+	emscripten_unwind_to_js_event_loop();
 }
 
 // --- zlib shim ---

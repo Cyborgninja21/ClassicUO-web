@@ -24,7 +24,16 @@ namespace ClassicUO.Game.Managers
 
         public void Initialize()
         {
-            try
+            // WASM single-threaded AOT: music/sound playback streams audio through a
+            // DynamicSoundEffectInstance buffer-needed reverse-pinvoke callback (FAudio),
+            // which can't be wired here (it hangs the single thread). Disable audio
+            // reproduction on browser so PlayMusic/PlaySound* no-op. The WebAudio device
+            // still initializes fine; only streamed playback is unavailable.
+            if (OperatingSystem.IsBrowser())
+            {
+                _canReproduceAudio = false;
+            }
+            else try
             {
                 new DynamicSoundEffectInstance(0, AudioChannels.Stereo).Dispose();
             }

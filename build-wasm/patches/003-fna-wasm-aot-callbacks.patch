@@ -1,0 +1,127 @@
+diff --git a/src/FNALoggerEXT.cs b/src/FNALoggerEXT.cs
+index e577a32..8fd89fd 100644
+--- a/src/FNALoggerEXT.cs
++++ b/src/FNALoggerEXT.cs
+@@ -59,6 +59,16 @@ namespace Microsoft.Xna.Framework
+ 
+ 		internal static void HookFNA3D()
+ 		{
++			/* WASM single-threaded AOT: registering these managed log callbacks as
++			 * native function pointers trips a reverse-pinvoke `function signature
++			 * mismatch` when FNA3D calls back during device creation. FNA3D treats
++			 * unhooked log functions as no-ops, so skip the hook on browser — we lose
++			 * only FNA3D's internal GL trace lines (cosmetic). See build-wasm patches. */
++			if (OperatingSystem.IsBrowser())
++			{
++				return;
++			}
++
+ 			/* Try to hook into the FNA3D logging system */
+ 			try
+ 			{
+diff --git a/src/Graphics/FNA3D.cs b/src/Graphics/FNA3D.cs
+index c682073..d21fdde 100644
+--- a/src/Graphics/FNA3D.cs
++++ b/src/Graphics/FNA3D.cs
+@@ -10,6 +10,7 @@
+ #region Using Statements
+ using System;
+ using System.IO;
++using System.Runtime.CompilerServices;
+ using System.Runtime.InteropServices;
+ #endregion
+ 
+@@ -875,11 +876,16 @@ namespace Microsoft.Xna.Framework.Graphics
+ 		[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+ 		private delegate int FNA3D_Image_EOFFunc(IntPtr context);
+ 
++		/* WASM single-threaded AOT: the [MonoPInvokeCallback]+delegate reverse-pinvoke
++		 * pattern generates a wrong-signature native_to_interp trampoline (native stb_image
++		 * calls back into INTERNAL_Read -> `function signature mismatch` trap). Modernized to
++		 * [UnmanagedCallersOnly] + function pointers, which the .NET WASM AOT compiler emits
++		 * correct entry thunks for. Works identically on desktop. See build-wasm patches. */
+ 		[DllImport(nativeLibName, CallingConvention = CallingConvention.Cdecl)]
+-		private static extern IntPtr FNA3D_Image_Load(
+-			FNA3D_Image_ReadFunc readFunc,
+-			FNA3D_Image_SkipFunc skipFunc,
+-			FNA3D_Image_EOFFunc eofFunc,
++		private static extern unsafe IntPtr FNA3D_Image_Load(
++			delegate* unmanaged[Cdecl]<IntPtr, IntPtr, int, int> readFunc,
++			delegate* unmanaged[Cdecl]<IntPtr, int, void> skipFunc,
++			delegate* unmanaged[Cdecl]<IntPtr, int> eofFunc,
+ 			IntPtr context,
+ 			out int width,
+ 			out int height,
+@@ -892,7 +898,7 @@ namespace Microsoft.Xna.Framework.Graphics
+ 		[DllImport(nativeLibName, CallingConvention = CallingConvention.Cdecl)]
+ 		public static extern void FNA3D_Image_Free(IntPtr mem);
+ 
+-		[ObjCRuntime.MonoPInvokeCallback(typeof(FNA3D_Image_ReadFunc))]
++		[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+ 		private static int INTERNAL_Read(
+ 			IntPtr context,
+ 			IntPtr data,
+@@ -909,7 +915,7 @@ namespace Microsoft.Xna.Framework.Graphics
+ 			return result;
+ 		}
+ 
+-		[ObjCRuntime.MonoPInvokeCallback(typeof(FNA3D_Image_SkipFunc))]
++		[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+ 		private static void INTERNAL_Skip(IntPtr context, int n)
+ 		{
+ 			Stream stream;
+@@ -920,7 +926,7 @@ namespace Microsoft.Xna.Framework.Graphics
+ 			stream.Seek(n, SeekOrigin.Current);
+ 		}
+ 
+-		[ObjCRuntime.MonoPInvokeCallback(typeof(FNA3D_Image_EOFFunc))]
++		[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+ 		private static int INTERNAL_EOF(IntPtr context)
+ 		{
+ 			Stream stream;
+@@ -931,10 +937,6 @@ namespace Microsoft.Xna.Framework.Graphics
+ 			return (stream.Position == stream.Length) ? 1 : 0;
+ 		}
+ 
+-		private static FNA3D_Image_ReadFunc readFunc = INTERNAL_Read;
+-		private static FNA3D_Image_SkipFunc skipFunc = INTERNAL_Skip;
+-		private static FNA3D_Image_EOFFunc eofFunc = INTERNAL_EOF;
+-
+ 		private static int readGlobal = 0;
+ 		private static System.Collections.Generic.Dictionary<IntPtr, Stream> readStreams =
+ 			new System.Collections.Generic.Dictionary<IntPtr, Stream>();
+@@ -954,18 +956,22 @@ namespace Microsoft.Xna.Framework.Graphics
+ 				context = (IntPtr) readGlobal++;
+ 				readStreams.Add(context, stream);
+ 			}
+-			IntPtr pixels = FNA3D_Image_Load(
+-				readFunc,
+-				skipFunc,
+-				eofFunc,
+-				context,
+-				out width,
+-				out height,
+-				out len,
+-				forceW,
+-				forceH,
+-				(byte) (zoom ? 1 : 0)
+-			);
++			IntPtr pixels;
++			unsafe
++			{
++				pixels = FNA3D_Image_Load(
++					&INTERNAL_Read,
++					&INTERNAL_Skip,
++					&INTERNAL_EOF,
++					context,
++					out width,
++					out height,
++					out len,
++					forceW,
++					forceH,
++					(byte) (zoom ? 1 : 0)
++				);
++			}
+ 			lock (readStreams)
+ 			{
+ 				readStreams.Remove(context);

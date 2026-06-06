@@ -36,8 +36,29 @@ let settings = {
 try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
 console.log('[boot] UO files written; starting ClassicUO (ip=' + settings.ip + ')');
 try {
+  // Returns after init now — the main loop is JS-driven (single-threaded WASM AOT can't
+  // wire emscripten_set_main_loop's reverse-pinvoke callback). We pump frames below.
   exports.ClassicUOLoader.StartClassicUO(JSON.stringify(settings));
 } catch (e) {
   // emscripten simulate_infinite_loop throws "unwind" to hand the stack to rAF — expected.
   if (!('' + e).includes('unwind')) _fatal('StartClassicUO', e);
 }
+
+// Drive FNA's frame loop from requestAnimationFrame. TickFrame() runs one Update+Draw
+// and returns false once the game exits, at which point we stop the pump.
+console.log('[boot] starting rAF frame pump');
+let _frames = 0;
+function _pump() {
+  let alive = true;
+  try {
+    alive = exports.ClassicUOLoader.TickFrame();
+  } catch (e) {
+    if (('' + e).includes('unwind')) { requestAnimationFrame(_pump); return; }
+    _fatal('TickFrame@' + _frames, e);
+    return;
+  }
+  if (++_frames === 1) console.log('[boot] first frame ticked');
+  if (alive) requestAnimationFrame(_pump);
+  else console.log('[boot] game exited; rAF pump stopped after ' + _frames + ' frames');
+}
+requestAnimationFrame(_pump);

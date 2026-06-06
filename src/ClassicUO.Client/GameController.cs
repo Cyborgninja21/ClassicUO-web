@@ -128,9 +128,31 @@ namespace ClassicUO
             SolidColorTextureCache.Initialize(GraphicsDevice);
             Audio = new AudioManager();
 
-            var bytes = Loader.GetBackgroundImage().ToArray();
-            using var ms = new MemoryStream(bytes);
-            _renderTargets.InitializeBackground(Texture2D.FromStream(GraphicsDevice, ms));
+            if (OperatingSystem.IsBrowser())
+            {
+                // WASM single-threaded AOT: FNA3D_Image_Load decodes PNGs via native->managed
+                // read callbacks (stb_image), which can't be wired through the reverse-pinvoke
+                // thunks here (function signature mismatch). The login background is cosmetic, so
+                // use a 1x1 solid texture. UO gump/art rendering uses ClassicUO's own file readers
+                // (not FNA3D image decode), so the login UI + world render fine. PNG decode
+                // (background/options logo/world-map import) is a known browser limitation.
+                // Size matters: RenderTargets.Draw tiles this across the whole window via
+                // DrawTiled(_background.Bounds). A 1x1 source tiles ~307k times (frozen
+                // first frame), so use a 512x512 solid page — a handful of tiles at any
+                // resolution. Opaque black fill (the window is also Cleared to black).
+                const int bgSize = 512;
+                var solid = new Texture2D(GraphicsDevice, bgSize, bgSize);
+                var px = new Microsoft.Xna.Framework.Color[bgSize * bgSize];
+                System.Array.Fill(px, Microsoft.Xna.Framework.Color.Black);
+                solid.SetData(px);
+                _renderTargets.InitializeBackground(solid);
+            }
+            else
+            {
+                var bytes = Loader.GetBackgroundImage().ToArray();
+                using var ms = new MemoryStream(bytes);
+                _renderTargets.InitializeBackground(Texture2D.FromStream(GraphicsDevice, ms));
+            }
 #if false
             SetScene(new MainScene(this));
 #else
