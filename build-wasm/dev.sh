@@ -51,6 +51,7 @@ clean(){
 
 build(){
   local cfg="${1:-release}" extra="" t0=$SECONDS logf="$RUN/build.log"
+  cd "$HERE"   # CWD-independent: `dotnet publish loader` resolves from build-wasm/ (CI runs from repo root)
   if [ "$cfg" = debug ]; then
     # Keep the wasm name section + emit an index->name symbol map so traps symbolicate.
     extra="-p:WasmNativeStrip=false -p:WasmNativeDebugSymbols=true -p:WasmEmitSymbolMap=true"
