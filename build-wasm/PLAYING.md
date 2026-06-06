@@ -7,11 +7,15 @@ files once; everything else is served for you.
 ## Quick start
 
 1. Go to **https://play.utumno-uo-t2a.epikos-kyklos.com** (internal/LAN this phase).
-2. The first time, you'll see **"Load your Ultima Online art"**. Click **Select your UO
-   folder** and pick the folder of a UO installation (see below). The files are cached in
-   your browser (OPFS) — **nothing is uploaded anywhere**, and you only do this once per
-   browser.
-3. The client loads and shows the login screen. Sign in with your shard account and play.
+2. **On the homelab instance the art is already provided for you** — the page downloads it
+   once (a progress line shows "downloading art (one time)…"), caches it in your browser
+   (OPFS), and goes straight to the login screen. No folder picking. The download only
+   happens the first time per browser; later visits load instantly from the cache.
+3. Sign in with your shard account and play.
+
+> **If you self-host (or the server art isn't available)** you'll instead see **"Load your
+> Ultima Online art"** — click **Select your UO folder** and pick a UO installation (see
+> below). Same OPFS caching, **nothing is uploaded anywhere**, one time per browser.
 
 ## What art do I need?
 
@@ -47,3 +51,16 @@ just won't draw.
 
 Build/deploy lives in `build-wasm/` (see `BUILD-WASM.md`) + the homelab stacks
 `utumno-uo-t2a-web` / `-wsproxy` / `-diag`. Plan: `Utumno-iac/plans/utumno-uo-t2a-web-client.md`.
+
+**Operator-hosted art (zero-setup, Plan W7).** The page serves a curated UO-art set from
+`/uo-data/` so LAN players skip the picker. Populate it from a UO Classic client install
+on the serving host with the Utumno-iac harness:
+
+```
+task utumno-uo:web:load-art CONFIRM_PROD=yes            # default source: /opt/utumno-uo-t2a-data
+task utumno-uo:web:load-art SRC=/path/to/uo CONFIRM_PROD=yes
+```
+
+It copies only the art files (34 required + animations — never `client.exe` or server
+internals) into the read-only `/uo-data/` bind-mount and writes `manifest.json`. Idempotent.
+If `/uo-data/` is empty/absent the page cleanly falls back to the player folder picker.
