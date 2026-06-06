@@ -63,7 +63,9 @@ build(){
   pkill -9 -f 'dotnet publish loader' 2>/dev/null; sleep 1
   : > "$logf"
   log "building... (tail: $logf)"
-  "$DOTNET" publish loader -c Release $extra > "$logf" 2>&1 &
+  # -m:1 serializes MSBuild — the parallel build races on the FileEmbed submodule's
+  # nupkg pack ("being used by another process") on CI; serial is reliable, ~30s slower.
+  "$DOTNET" publish loader -c Release -m:1 $extra > "$logf" 2>&1 &
   local bpid=$!
   # `dotnet publish` HANGS after the final "publish/" line (known emscripten/dotnet
   # quirk) — wait for that line (or an error), then kill it so we don't wait forever.
