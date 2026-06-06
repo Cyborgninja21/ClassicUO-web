@@ -174,6 +174,14 @@ const UO_FILES = [
   "staidx0.mul", "statics0.mul", "string_dictionary.uop", "texidx.mul", "texmaps.mul", "tileart.uop",
   "tiledata.mul", "unifont.mul", "unifont1.mul", "unifont2.mul", "unifont3.mul",
 ];
+// Optional — loaded if the player's folder/cache has them (mobiles/items render with
+// these; the world still loads without them, just no animations). Not required by the
+// picker so partial installs work; the render loop skips anything it can't draw.
+const UO_FILES_OPTIONAL = [
+  "AnimationFrame1.uop", "AnimationFrame2.uop", "AnimationFrame3.uop", "AnimationFrame4.uop",
+  "anim.mul", "anim.idx", "anim2.mul", "anim2.idx", "anim3.mul", "anim3.idx",
+  "multi.mul", "multi.idx", "Multimap.rle", "verdata.mul",
+];
 
 function artStatus(msg) { const el = document.getElementById('art-status'); if (el) el.textContent = msg; _log('[art] ' + msg); }
 
@@ -196,11 +204,14 @@ async function opfsWrite(dir, f, buf) {
 async function loadFromOpfs() {
   artStatus('loading cached art…');
   const dir = await opfsArtDir(false);
+  // Load everything cached (required + any optional the player provided).
+  const names = [];
+  for await (const [name, handle] of dir.entries()) if (handle.kind === 'file') names.push(name);
   let i = 0;
-  for (const f of UO_FILES) {
+  for (const f of names) {
     const buf = new Uint8Array(await (await (await dir.getFileHandle(f)).getFile()).arrayBuffer());
     exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
-    artStatus('loading cached art… ' + (++i) + '/' + UO_FILES.length);
+    artStatus('loading cached art… ' + (++i) + '/' + names.length);
   }
 }
 
@@ -245,13 +256,15 @@ function showArtPicker() {
           artStatus('that folder is missing ' + missing.length + ' file(s) (e.g. ' + missing.slice(0, 3).join(', ') + ') — pick your UO root folder.');
           return;
         }
+        // Required + any optional files the folder actually has (mobiles/items art).
+        const toImport = UO_FILES.concat(UO_FILES_OPTIONAL.filter(f => byName.has(f.toLowerCase())));
         const dir = await opfsArtDir(true);
         let i = 0;
-        for (const f of UO_FILES) {
+        for (const f of toImport) {
           const buf = new Uint8Array(await byName.get(f.toLowerCase()).arrayBuffer());
           await opfsWrite(dir, f, buf);
           exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
-          artStatus('importing ' + (++i) + '/' + UO_FILES.length + ' (' + f + ')…');
+          artStatus('importing ' + (++i) + '/' + toImport.length + ' (' + f + ')…');
         }
         artStatus('done — starting the client…');
         ov.remove();

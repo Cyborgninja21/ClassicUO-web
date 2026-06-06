@@ -36,17 +36,28 @@ namespace ClassicUO.Configuration
 
         public static void Load(string servername, string username, string charactername)
         {
-            GlobalProfile = ConfigurationResolver.Load<GlobalProfile>(Path.Combine(RootPath, "globalprofile.json"), ProfileJsonContext.DefaultToUse.GlobalProfile) ?? new GlobalProfile();
+            // Be tolerant of a MEMFS folder/JSON hiccup here: if any step throws, the
+            // world Views deref CurrentProfile unguarded and NRE the whole game scene.
+            // Always leave CurrentProfile set (a fresh default at worst).
+            try
+            {
+                GlobalProfile = ConfigurationResolver.Load<GlobalProfile>(Path.Combine(RootPath, "globalprofile.json"), ProfileJsonContext.DefaultToUse.GlobalProfile) ?? new GlobalProfile();
 
-            string path = FileSystemHelper.CreateFolderIfNotExists(RootPath, username, servername, charactername);
-            string fileToLoad = Path.Combine(path, "profile.json");
+                string path = FileSystemHelper.CreateFolderIfNotExists(RootPath, username, servername, charactername);
+                ProfilePath = path;
+                CurrentProfile = ConfigurationResolver.Load<Profile>(Path.Combine(path, "profile.json"), ProfileJsonContext.DefaultToUse.Profile) ?? NewFromDefault();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[ProfileManager] Load failed, using a default profile: " + ex);
+                GlobalProfile ??= new GlobalProfile();
+                CurrentProfile = new Profile();
+            }
 
-            ProfilePath = path;
-            CurrentProfile = ConfigurationResolver.Load<Profile>(fileToLoad, ProfileJsonContext.DefaultToUse.Profile) ?? NewFromDefault();
-
-            CurrentProfile.Username = username;
-            CurrentProfile.ServerName = servername;
-            CurrentProfile.CharacterName = charactername;
+            CurrentProfile ??= new Profile();
+            CurrentProfile.Username = string.IsNullOrEmpty(username) ? "player" : username;
+            CurrentProfile.ServerName = string.IsNullOrEmpty(servername) ? "_" : servername;
+            CurrentProfile.CharacterName = string.IsNullOrEmpty(charactername) ? "char" : charactername;
 
             ValidateFields(CurrentProfile);
         }

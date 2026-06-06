@@ -59,6 +59,7 @@ namespace ClassicUO.Game.Scenes
     /// </summary>
     internal class RenderLists
     {
+        private static bool _drawErrLogged;   // one-shot: first un-drawable object (missing art)
         private readonly List<GameObject> _tiles = [];
         private readonly List<GameObject> _stretchedTiles = [];
         private readonly List<GameObject> _statics = [];
@@ -275,9 +276,24 @@ namespace ClassicUO.Game.Scenes
                 {
                     float depth = obj.CalculateDepthZ();
 
-                    if (obj.Draw(batcher, obj.RealScreenPosition.X, obj.RealScreenPosition.Y, depth))
+                    try
                     {
-                        done++;
+                        if (obj.Draw(batcher, obj.RealScreenPosition.X, obj.RealScreenPosition.Y, depth))
+                        {
+                            done++;
+                        }
+                    }
+                    catch (Exception _ex)
+                    {
+                        // Resilience: a single object that can't draw (e.g. a mobile whose
+                        // animation frames aren't in the player's art set) must NOT crash the
+                        // whole game scene — skip it. Log the first occurrence per session.
+                        if (!_drawErrLogged)
+                        {
+                            _drawErrLogged = true;
+                            ClassicUO.Utility.Logging.Log.Warn("Skipping un-drawable " + obj.GetType().Name +
+                                " (graphic=" + obj.Graphic + ") — likely missing art: " + (_ex.Message ?? _ex.GetType().Name));
+                        }
                     }
                 }
             }

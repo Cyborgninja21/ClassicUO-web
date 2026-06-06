@@ -102,6 +102,10 @@ namespace ClassicUO.Game.Map
 
     internal sealed class ChunkMesh
     {
+        // WASM: the GPU chunk-mesh path renders nothing under FNA3D-on-WebGL; fall back to
+        // per-tile drawing. Desktop keeps the fast mesh path.
+        public static bool DisableChunkMesh = OperatingSystem.IsBrowser();
+
         public readonly MeshLayer Land = new();
         public readonly MeshLayer Statics = new();
 
@@ -127,6 +131,22 @@ namespace ClassicUO.Game.Map
             var profile = ProfileManager.CurrentProfile;
             if (profile == null)
                 return;
+
+            // WASM: the chunk-mesh GPU path (DynamicVertexBuffer + DrawIndexedPrimitives via
+            // the WorldMatrix shader uniform) draws nothing under FNA3D-on-WebGL — the world
+            // renders black. Force everything onto the per-tile batched path (LandView/
+            // StaticView.Draw via UltimaBatcher2D), the same path the login screen uses.
+            if (DisableChunkMesh)
+            {
+                for (int sx = 0; sx < 8; sx++)
+                    for (int sy = 0; sy < 8; sy++)
+                        for (var obj = chunk.GetHeadObject(sx, sy); obj != null; obj = obj.TNext)
+                        {
+                            obj.InChunkMesh = false;
+                            obj.MeshSpriteIndex = -1;
+                        }
+                return;
+            }
 
             _animatedWaterEffect = profile.AnimatedWaterEffect;
 
