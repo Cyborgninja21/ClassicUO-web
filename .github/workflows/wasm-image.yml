@@ -1,0 +1,96 @@
+name: WASM client — image build
+
+# Builds the ClassicUO-web WASM bundle with the frozen FNA-WASM-Build toolchain and
+# packages it behind nginx -> ghcr.io/cyborgninja21/classicuo-web. The toolchain
+# statics live in a durable fork Release (see build-wasm/fetch-statics.sh); the .NET
+# SDK + statics are cached so only the ~5 min AOT compile runs each time.
+
+on:
+  push:
+    branches: [web-wasm]
+    paths:
+      - "build-wasm/**"
+      - "src/**"
+      - "external/**"
+      - ".github/workflows/wasm-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: cyborgninja21/classicuo-web
+  STATICS_TAG: toolchain-26933625837
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache toolchain statics
+        uses: actions/cache@v4
+        with:
+          path: build-wasm/statics
+          key: ${{ env.STATICS_TAG }}
+
+      - name: Cache .NET SDK + wasm-tools
+        uses: actions/cache@v4
+        with:
+          path: build-wasm/.toolchain
+          key: dotnet-toolchain-${{ hashFiles('build-wasm/install-dotnet.sh') }}
+
+      - name: Apply submodule patches
+        run: bash build-wasm/apply-patches.sh
+
+      - name: Install .NET 10 SDK + wasm-tools
+        run: bash build-wasm/install-dotnet.sh
+
+      - name: Fetch toolchain statics (durable fork Release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash build-wasm/fetch-statics.sh
+
+      - name: Build WASM bundle
+        run: bash build-wasm/dev.sh build
+
+      - name: Stage bundle for the image
+        run: |
+          set -euo pipefail
+          PUB=build-wasm/loader/bin/Release/net10.0/publish/wwwroot
+          test -f "$PUB/index.html" || { echo "no bundle at $PUB"; exit 1; }
+          rm -rf build-wasm/deploy/wwwroot
+          cp -r "$PUB" build-wasm/deploy/wwwroot
+          echo "Bundle staged:"; ls -1 build-wasm/deploy/wwwroot | head
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+
+      - name: Build + push image
+        uses: docker/build-push-action@v6
+        with:
+          context: build-wasm/deploy
+          file: build-wasm/deploy/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
