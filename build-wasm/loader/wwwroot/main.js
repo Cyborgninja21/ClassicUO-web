@@ -129,6 +129,9 @@ setInterval(() => {
 // Boot
 // ---------------------------------------------------------------------------
 try { diag.build_sha = (await (await fetch('/build-info.json')).json()).sha || 'dev'; } catch {}
+// Production default: ship beacons to the same-origin diag sidecar so real-player
+// crashes/stalls reach Loki (dev stays console-only; uo-config can override).
+if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) diag.endpoint = '/ingest';
 _log('[boot] build ' + diag.build_sha + ' session ' + diag.session);
 
 const { getAssemblyExports, getConfig, setModuleImports } = await dotnet.create();
@@ -156,13 +159,115 @@ setModuleImports('uo-ws', {
 });
 exports.ClassicUOLoader.Init();
 exports.ClassicUOLoader.MkUODir();
-const base = new URL('/uo-data/', location.href).href;
-const files = await (await fetch('/uo-data/manifest.json')).json();
-for (const f of files) {
-  if (f === 'manifest.json') continue;
-  const buf = new Uint8Array(await (await fetch(base + f)).arrayBuffer());
-  exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
+
+// ===========================================================================
+// UO art onboarding (plan §W5). UO art is EA-owned and NOT shipped — the player
+// supplies it once from a UO install (T2A / 7.0.x). It's cached in OPFS (persists
+// across sessions), so the folder picker only shows the first time. Dev keeps the
+// /uo-data/ server fallback so the harness e2e needs no picker. Nothing is uploaded.
+// ===========================================================================
+const UO_FILES = [
+  "AnimationSequence.uop", "Body.def", "Bodyconv.def", "Cliloc.enu", "MainMisc.uop",
+  "MultiCollection.uop", "Prof.txt", "Professn.enu", "Skills.idx", "Sound.def", "art.def",
+  "artLegacyMUL.uop", "fonts.mul", "gump.def", "gumpartLegacyMUL.uop", "hues.mul", "light.mul",
+  "lightidx.mul", "map0LegacyMUL.uop", "mobtypes.txt", "radarcol.mul", "skills.mul", "speech.mul",
+  "staidx0.mul", "statics0.mul", "string_dictionary.uop", "texidx.mul", "texmaps.mul", "tileart.uop",
+  "tiledata.mul", "unifont.mul", "unifont1.mul", "unifont2.mul", "unifont3.mul",
+];
+
+function artStatus(msg) { const el = document.getElementById('art-status'); if (el) el.textContent = msg; _log('[art] ' + msg); }
+
+async function opfsArtDir(create) {
+  const root = await navigator.storage.getDirectory();
+  return await root.getDirectoryHandle('uo-art', { create: !!create });
 }
+async function opfsHasAllArt() {
+  try {
+    const dir = await opfsArtDir(false);
+    for (const f of UO_FILES) await dir.getFileHandle(f);   // throws if any missing
+    return true;
+  } catch { return false; }
+}
+async function opfsWrite(dir, f, buf) {
+  const w = await (await dir.getFileHandle(f, { create: true })).createWritable();
+  await w.write(buf); await w.close();
+}
+
+async function loadFromOpfs() {
+  artStatus('loading cached art…');
+  const dir = await opfsArtDir(false);
+  let i = 0;
+  for (const f of UO_FILES) {
+    const buf = new Uint8Array(await (await (await dir.getFileHandle(f)).getFile()).arrayBuffer());
+    exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
+    artStatus('loading cached art… ' + (++i) + '/' + UO_FILES.length);
+  }
+}
+
+// Dev fallback: the /uo-data/ art server (harness). Guarded — returns false if the
+// path 404s to the SPA fallback (production has no /uo-data/), so it never crashes.
+async function loadFromDevServer() {
+  try {
+    const r = await fetch('/uo-data/manifest.json');
+    if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return false;
+    const list = await r.json();
+    const baseUrl = new URL('/uo-data/', location.href).href;
+    for (const f of list) {
+      if (f === 'manifest.json') continue;
+      exports.ClassicUOLoader.WriteUOFile('/uo/' + f, new Uint8Array(await (await fetch(baseUrl + f)).arrayBuffer()));
+    }
+    return true;
+  } catch { return false; }
+}
+
+// First-run folder picker (webkitdirectory — works in Firefox + Chrome, unlike
+// showDirectoryPicker). Resolves once the player's art is imported + cached.
+function showArtPicker() {
+  return new Promise((resolve, reject) => {
+    setPhase('awaiting-art');
+    const ov = document.createElement('div');
+    ov.id = 'art-picker';
+    ov.style.cssText = 'position:fixed;inset:0;background:#0b0b0b;color:#ddd;font:14px system-ui,sans-serif;display:flex;align-items:center;justify-content:center;z-index:9999';
+    ov.innerHTML =
+      '<div style="max-width:540px;padding:28px;text-align:center;line-height:1.55">' +
+      '<h2 style="color:#fff;font-weight:600;margin:0 0 12px">Load your Ultima Online art</h2>' +
+      '<p style="color:#9aa0a6;margin:0 0 18px">This browser client needs the art files from a UO install (T2A&nbsp;/&nbsp;7.0.x). They stay in your browser (OPFS) — you only do this once, and nothing is uploaded.</p>' +
+      '<label style="display:inline-block;padding:10px 18px;background:#3b6ea5;color:#fff;border-radius:6px;cursor:pointer">Select your UO folder' +
+      '<input id="uo-folder" type="file" webkitdirectory multiple style="display:none"></label>' +
+      '<div id="art-status" style="margin-top:16px;color:#9aa0a6;min-height:1.4em"></div></div>';
+    document.body.appendChild(ov);
+    ov.querySelector('#uo-folder').addEventListener('change', async (ev) => {
+      try {
+        const byName = new Map();
+        for (const file of ev.target.files) byName.set((file.name || '').toLowerCase(), file);
+        const missing = UO_FILES.filter(f => !byName.has(f.toLowerCase()));
+        if (missing.length) {
+          artStatus('that folder is missing ' + missing.length + ' file(s) (e.g. ' + missing.slice(0, 3).join(', ') + ') — pick your UO root folder.');
+          return;
+        }
+        const dir = await opfsArtDir(true);
+        let i = 0;
+        for (const f of UO_FILES) {
+          const buf = new Uint8Array(await byName.get(f.toLowerCase()).arrayBuffer());
+          await opfsWrite(dir, f, buf);
+          exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
+          artStatus('importing ' + (++i) + '/' + UO_FILES.length + ' (' + f + ')…');
+        }
+        artStatus('done — starting the client…');
+        ov.remove();
+        resolve();
+      } catch (e) { artStatus('import failed: ' + ((e && e.message) || e)); reject(e); }
+    });
+  });
+}
+
+// OPFS (cached) -> dev server -> first-run picker. Never crashes on absent art.
+async function loadArt() {
+  if (await opfsHasAllArt()) { await loadFromOpfs(); return; }
+  if (await loadFromDevServer()) return;
+  await showArtPicker();
+}
+await loadArt();
 // Default settings render the login screen. An optional (gitignored) ./uo-config.json
 // overrides them — e.g. a ws:// proxy URL + autologin creds for an end-to-end test.
 // `diag_endpoint` (optional) points the beacons at the diag-sidecar /ingest URL.
