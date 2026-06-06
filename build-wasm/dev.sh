@@ -77,7 +77,11 @@ build(){
     return 1
   fi
   [ -d "$PUB/_framework" ] || { err "no _framework output"; return 1; }
-  log "build ok in $((SECONDS-t0))s"
+  # Stamp build-info.json into the bundle (Layer 1 §3.5): the SHA flows into every
+  # diag beacon so the sidecar symbolicates against the matching symbol map.
+  local sha; sha="$(git -C "$HERE/.." rev-parse --short HEAD 2>/dev/null || echo dev)"
+  printf '{"sha":"%s","cfg":"%s","built":%s}\n' "$sha" "$cfg" "$SECONDS" > "$PUB/build-info.json"
+  log "build ok in $((SECONDS-t0))s (sha $sha)"
 }
 
 _serve(){
