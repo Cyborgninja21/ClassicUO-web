@@ -42,6 +42,7 @@ function setPhase(p) {
 // Ring of recent log lines + phase detection. Hard wasm traps print with no
 // stack; the ring is how we recover "where you were". See DEBUGGING.md.
 const _ring = [];
+let _wd = null;   // freeze-watchdog worker (created later in the pump section); declared up here so the console.log override can forward [step] breadcrumbs to it in real time
 // Bind the ORIGINAL console methods up front; every override below emits through these
 // (never through another override), so capture happens exactly once — no recursion, no
 // double-logging into the ring.
@@ -74,7 +75,7 @@ function _captureLine(line) {
 // console.warn); if so this override can't intercept it and an FNA3D patch is the only fix.
 const _BENIGN_WARN = /INVALID_ENUM:\s*getInternalformatParameter/;
 
-console.log = (...a) => { const l = _join(a); _captureLine(l); if (l.startsWith('[step] ')) return; _log(...a); };
+console.log = (...a) => { const l = _join(a); _captureLine(l); if (l.startsWith('[step] ')) { if (_wd) { try { _wd.postMessage({ t: 'step', s: l.slice(7) }); } catch {} } return; } _log(...a); };
 console.warn = (...a) => { const l = _join(a); _captureLine(l); (_BENIGN_WARN.test(l) ? _info : _warn)(...a); };
 console.error = (...a) => { _captureLine(_join(a)); _err(...a); };
 
@@ -497,19 +498,18 @@ try {
 // live frame/phase/ring, and if the pings stop for >4s the Worker reports the freeze — to its
 // own console (which still surfaces in DevTools while the main thread is frozen) and to
 // /ingest if configured — with the last-known state. Silent wedges become diagnosable.
-let _wd = null;
 function _wdPing() {
   if (!_wd) return;
   try { _wd.postMessage({ t: 'hb', frame: diag.frame, phase: diag.phase, endpoint: diag.endpoint, build: diag.build_sha, ring: _ring.slice(-15) }); } catch {}
 }
 try {
   const _wdSrc =
-    "let last=Date.now(),s={},fired=false;" +
-    "onmessage=function(e){var d=e.data;if(d&&d.t==='hb'){last=Date.now();s=d;fired=false;}};" +
+    "let last=Date.now(),s={},step='?',fired=false;" +
+    "onmessage=function(e){var d=e.data;if(d){if(d.t==='hb'){last=Date.now();s=d;fired=false;}else if(d.t==='step'){last=Date.now();step=d.s;fired=false;}}};" +
     "setInterval(function(){var dt=Date.now()-last;" +
     "if(!fired&&dt>4000){fired=true;" +
-    "console.error('[FREEZE] main thread wedged '+dt+'ms — frame '+s.frame+' phase '+s.phase+' (build '+s.build+')\\n--- last log lines ---\\n'+((s.ring||[]).join('\\n')));" +
-    "if(s.endpoint){try{fetch(s.endpoint,{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'freeze',since_ms:dt,frozen_frame:s.frame,frozen_phase:s.phase,build_sha:s.build,ring:s.ring||[]})}).catch(function(){});}catch(_){}}}" +
+    "console.error('[FREEZE] main thread wedged '+dt+'ms — STEP='+step+' — frame '+s.frame+' phase '+s.phase+' (build '+s.build+')\\n--- last log lines ---\\n'+((s.ring||[]).join('\\n')));" +
+    "if(s.endpoint){try{fetch(s.endpoint,{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'freeze',since_ms:dt,frozen_step:step,frozen_frame:s.frame,frozen_phase:s.phase,build_sha:s.build,ring:s.ring||[]})}).catch(function(){});}catch(_){}}}" +
     "},1000);";
   _wd = new Worker(URL.createObjectURL(new Blob([_wdSrc], { type: 'application/javascript' })));
   _wdPing();
