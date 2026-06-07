@@ -645,6 +645,33 @@ namespace ClassicUO
             }
         }
 
+        // --- Browser input bridge (see WebEntry.Inject* + Loader JSExports). SDL3's emscripten
+        // event callbacks don't deliver discrete mouse/keyboard events into the SDL queue under
+        // single-threaded WASM AOT — the same callback-trap class as the emscripten main loop and
+        // SDL_SetEventFilter, both already replaced. So JS (main.js) owns the canvas DOM input and
+        // feeds it here; we synthesize the SDL_Event and run the normal HandleSdlEvent pipeline.
+        // Mouse position is resolved by Mouse.Update()'s SDL_GetMouseState poll (which works — it
+        // drives the cursor), so clicks land 1:1. These fire between frames on the single JS thread,
+        // so there's no re-entrancy with TickFrame. ---
+        public unsafe void InjectMouseButton(int sdlButton, bool down)
+        {
+            Mouse.MouseInWindow = true;
+            SDL_Event ev = default;
+            ev.type = (uint)(down ? SDL_EventType.SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EventType.SDL_EVENT_MOUSE_BUTTON_UP);
+            ev.button.button = (byte)sdlButton;
+            ev.button.down = down;
+            ev.button.clicks = 1;
+            HandleSdlEvent(IntPtr.Zero, &ev);
+        }
+
+        public unsafe void InjectMouseWheel(int dy)
+        {
+            SDL_Event ev = default;
+            ev.type = (uint)SDL_EventType.SDL_EVENT_MOUSE_WHEEL;
+            ev.wheel.y = dy;
+            HandleSdlEvent(IntPtr.Zero, &ev);
+        }
+
         private bool HandleSdlEvent(IntPtr userData, SDL_Event* sdlEvent)
         {
             // Don't pass SDL events to the plugin host before the plugins are initialized

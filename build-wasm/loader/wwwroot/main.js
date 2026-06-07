@@ -455,6 +455,17 @@ try {
   _resize(); _focus();
   addEventListener('resize', _resize);
   addEventListener('pointerdown', _focus, true);   // refocus on any click so keystrokes keep landing
+
+  // SDL's emscripten event callbacks don't enqueue discrete events under single-threaded
+  // WASM AOT, so JS owns the canvas mouse input and feeds it through JSExports (same bypass
+  // as the WebSocket + frame loop). Mouse POSITION is polled SDL-side (it drives the cursor);
+  // we inject only the discrete button/wheel. DOM button → SDL button (left 1, middle 2,
+  // right 3, x1 4, x2 5).
+  const _sdlBtn = b => b === 1 ? 2 : b === 2 ? 3 : b === 3 ? 4 : b === 4 ? 5 : 1;
+  _canvas.addEventListener('pointerdown', e => { try { exports.ClassicUOLoader.InjectMouseButton(_sdlBtn(e.button), true); } catch {} });
+  _canvas.addEventListener('pointerup',   e => { try { exports.ClassicUOLoader.InjectMouseButton(_sdlBtn(e.button), false); } catch {} });
+  _canvas.addEventListener('contextmenu', e => e.preventDefault());   // right-click goes to the game, not the browser menu
+  _canvas.addEventListener('wheel', e => { try { exports.ClassicUOLoader.InjectMouseWheel(e.deltaY < 0 ? 1 : -1); } catch {} e.preventDefault(); }, { passive: false });
 }
 
 // Drive FNA's frame loop from requestAnimationFrame. TickFrame() runs one Update+Draw

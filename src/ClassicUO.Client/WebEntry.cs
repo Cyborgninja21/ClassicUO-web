@@ -36,5 +36,11 @@ namespace ClassicUO
             if (OperatingSystem.IsBrowser())
                 Client.Game?.SetWindowSize(width, height);
         }
+
+        // Public seams for the loader's input-injection JSExports (Client.Game is internal).
+        // JS feeds canvas mouse input here because SDL's emscripten event callbacks don't
+        // enqueue discrete events under WASM AOT.
+        public static void InjectMouseButton(int sdlButton, bool down) => Client.Game?.InjectMouseButton(sdlButton, down);
+        public static void InjectMouseWheel(int dy) => Client.Game?.InjectMouseWheel(dy);
     }
 }

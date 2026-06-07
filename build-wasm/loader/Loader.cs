@@ -118,4 +118,22 @@ public static partial class ClassicUOLoader
         try { ClassicUO.WebEntry.SetCanvasSize(width, height); }
         catch (Exception e) { Console.WriteLine("[loader] SetCanvasSize failed: " + e.Message); }
     }
+
+    // Browser input bridge: SDL's emscripten event callbacks don't enqueue discrete mouse
+    // events under WASM AOT, so main.js captures canvas DOM input and feeds it through these
+    // (synthesized into SDL_Events + run through ClassicUO's HandleSdlEvent). sdlButton: 1=left
+    // 2=middle 3=right 4/5=x1/x2. down=true on press, false on release.
+    [JSExport]
+    public static void InjectMouseButton(int sdlButton, bool down)
+    {
+        try { ClassicUO.WebEntry.InjectMouseButton(sdlButton, down); }
+        catch (Exception e) { Console.WriteLine("[loader] InjectMouseButton failed: " + e.Message); }
+    }
+
+    [JSExport]
+    public static void InjectMouseWheel(int dy)
+    {
+        try { ClassicUO.WebEntry.InjectMouseWheel(dy); }
+        catch (Exception e) { Console.WriteLine("[loader] InjectMouseWheel failed: " + e.Message); }
+    }
 }
