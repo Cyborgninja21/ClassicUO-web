@@ -229,29 +229,103 @@ async function loadFromOpfs() {
   }
 }
 
+// IndexedDB art cache — the persistent store for INSECURE contexts (plain-HTTP LAN
+// dev, e.g. http://172.16.2.154:8080). OPFS (navigator.storage) only exists in secure
+// contexts (https / localhost), so on raw-IP HTTP it's unavailable and the art would
+// otherwise re-fetch /uo-data/ on every load. IndexedDB IS available over plain HTTP,
+// so it gives the same one-time-cache contract there — and storage reads aren't HTTP
+// fetches, so the cache even survives a hard-refresh (which bypasses the HTTP cache).
+const IDB_DB = 'uo-art-cache', IDB_STORE = 'files';
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const rq = indexedDB.open(IDB_DB, 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore(IDB_STORE);
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+function idbGet(db, key) {
+  return new Promise((resolve, reject) => {
+    const rq = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+    rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error);
+  });
+}
+function idbPut(db, key, val) {
+  return new Promise((resolve, reject) => {
+    const rq = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put(val, key);
+    rq.onsuccess = () => resolve(); rq.onerror = () => reject(rq.error);
+  });
+}
+function idbKeys(db) {
+  return new Promise((resolve, reject) => {
+    const rq = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).getAllKeys();
+    rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error);
+  });
+}
+
+// Pick the best persistent art cache ONCE: OPFS in a secure context, else IndexedDB
+// (plain-HTTP dev), else null (no persistence — fetch each load as a last resort).
+// Uniform interface: { hasAll(), load(), write(name, buf) }. Memoized.
+let _artCache;
+async function artCache() {
+  if (_artCache !== undefined) return _artCache;
+  if (navigator.storage && navigator.storage.getDirectory) {
+    _artCache = {
+      kind: 'opfs',
+      hasAll: opfsHasAllArt,
+      load: loadFromOpfs,
+      write: async (f, buf) => { const d = await opfsArtDir(true); await opfsWrite(d, f, buf); },
+    };
+    return _artCache;
+  }
+  if (typeof indexedDB !== 'undefined') {
+    try {
+      const db = await idbOpen();
+      _artCache = {
+        kind: 'idb',
+        hasAll: async () => { try { const keys = new Set(await idbKeys(db)); return UO_FILES.every(f => keys.has(f)); } catch { return false; } },
+        load: async () => {
+          const keys = await idbKeys(db); let i = 0;
+          artStatus('loading cached art…');
+          for (const f of keys) {
+            const v = await idbGet(db, f); if (!v) continue;
+            exports.ClassicUOLoader.WriteUOFile('/uo/' + f, v instanceof Uint8Array ? v : new Uint8Array(v));
+            artStatus('loading cached art… ' + (++i) + '/' + keys.length);
+          }
+        },
+        write: (f, buf) => idbPut(db, f, buf),
+      };
+      return _artCache;
+    } catch { /* IndexedDB blocked (private mode etc.) — fall through to no-cache */ }
+  }
+  _artCache = null;
+  return _artCache;
+}
+
 // Operator-hosted art (Plan W7): the `/uo-data/` server set. Guarded — returns
 // false if the path 404s to the SPA fallback (no server art configured), so it
 // never crashes and the picker still takes over. On success it ALSO caches every
-// file into OPFS, so the *next* visit loads instantly from cache (loadFromOpfs)
-// with no multi-GB re-download — the same one-time cost the picker pays.
-async function loadFromDevServer() {
+// file into the persistent store (OPFS or IndexedDB), so the *next* visit loads
+// instantly from cache with no re-download — the same one-time cost the picker pays.
+async function loadFromDevServer(cache) {
   try {
     const r = await fetch('/uo-data/manifest.json');
     if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return false;
     const list = (await r.json()).filter(f => f && f !== 'manifest.json');
     if (!list.length) return false;
     const baseUrl = new URL('/uo-data/', location.href).href;
-    artStatus('downloading art (one time)…');
-    let dir = null;
-    try { dir = await opfsArtDir(true); } catch { dir = null; }   // OPFS cache is best-effort
+    // "(one time)" only when there's a persistent cache to write into; without one we
+    // don't over-promise — the fetch would repeat each load.
+    const once = cache ? ' (one time)' : '';
+    artStatus('downloading art' + once + '…');
     let i = 0;
     for (const f of list) {
       const resp = await fetch(baseUrl + f);
       if (!resp.ok) throw new Error('art fetch ' + f + ' -> ' + resp.status);
       const buf = new Uint8Array(await resp.arrayBuffer());
       exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
-      if (dir) { try { await opfsWrite(dir, f, buf); } catch {} }  // cache for next visit
-      artStatus('downloading art (one time)… ' + (++i) + '/' + list.length + ' (' + f + ')');
+      if (cache) { try { await cache.write(f, buf); } catch {} }  // cache for next visit
+      artStatus('downloading art' + once + '… ' + (++i) + '/' + list.length + ' (' + f + ')');
     }
     return true;
   } catch { return false; }
@@ -259,7 +333,7 @@ async function loadFromDevServer() {
 
 // First-run folder picker (webkitdirectory — works in Firefox + Chrome, unlike
 // showDirectoryPicker). Resolves once the player's art is imported + cached.
-function showArtPicker() {
+function showArtPicker(cache) {
   return new Promise((resolve, reject) => {
     setPhase('awaiting-art');
     const ov = document.createElement('div');
@@ -284,11 +358,10 @@ function showArtPicker() {
         }
         // Required + any optional files the folder actually has (mobiles/items art).
         const toImport = UO_FILES.concat(UO_FILES_OPTIONAL.filter(f => byName.has(f.toLowerCase())));
-        const dir = await opfsArtDir(true);
         let i = 0;
         for (const f of toImport) {
           const buf = new Uint8Array(await byName.get(f.toLowerCase()).arrayBuffer());
-          await opfsWrite(dir, f, buf);
+          if (cache) { try { await cache.write(f, buf); } catch {} }  // persist for next visit
           exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
           artStatus('importing ' + (++i) + '/' + toImport.length + ' (' + f + ')…');
         }
@@ -300,11 +373,13 @@ function showArtPicker() {
   });
 }
 
-// OPFS (cached) -> dev server -> first-run picker. Never crashes on absent art.
+// Persistent cache (OPFS on https, IndexedDB on plain-HTTP dev) -> /uo-data/ server
+// -> first-run picker. Never crashes on absent art.
 async function loadArt() {
-  if (await opfsHasAllArt()) { await loadFromOpfs(); return; }
-  if (await loadFromDevServer()) return;
-  await showArtPicker();
+  const cache = await artCache();
+  if (cache && await cache.hasAll()) { await cache.load(); return; }
+  if (await loadFromDevServer(cache)) return;
+  await showArtPicker(cache);
 }
 await loadArt();
 // Default settings render the login screen. An optional (gitignored) ./uo-config.json
