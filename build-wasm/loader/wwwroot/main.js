@@ -74,7 +74,7 @@ function _captureLine(line) {
 // console.warn); if so this override can't intercept it and an FNA3D patch is the only fix.
 const _BENIGN_WARN = /INVALID_ENUM:\s*getInternalformatParameter/;
 
-console.log = (...a) => { _captureLine(_join(a)); _log(...a); };
+console.log = (...a) => { const l = _join(a); _captureLine(l); if (l.startsWith('[step] ')) return; _log(...a); };
 console.warn = (...a) => { const l = _join(a); _captureLine(l); (_BENIGN_WARN.test(l) ? _info : _warn)(...a); };
 console.error = (...a) => { _captureLine(_join(a)); _err(...a); };
 
