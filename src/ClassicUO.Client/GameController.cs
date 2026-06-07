@@ -106,10 +106,10 @@ namespace ClassicUO
 
             _filter = HandleSdlEvent;
             // WASM: marshalling a managed delegate as a native SDL callback (reverse
-            // p/invoke) trips a Mono interpreter metadata-token assert (loader.c:1826).
-            // The event filter only affects input routing, not rendering, so skip it on
-            // browser for now — the login screen still renders. (TODO: re-add input via
-            // an [UnmanagedCallersOnly] function pointer.)
+            // p/invoke) trips a function-signature trap under WASM AOT, so the desktop
+            // SDL_SetEventFilter route is browser-skipped. Browser input is instead pumped
+            // per-frame in Update() (SDL_PollEvent → HandleSdlEvent), a forward P/Invoke
+            // that needs no native callback and also keeps the SDL queue drained.
             if (!OperatingSystem.IsBrowser())
                 SDL_SetEventFilter(_filter, IntPtr.Zero);
 
@@ -408,6 +408,27 @@ namespace ClassicUO
 
         protected override void Update(GameTime gameTime)
         {
+            // WASM input pump. The rAF-driven RunOneFrame() never polls SDL, and the
+            // native SDL_SetEventFilter callback can't be wired on browser (the managed
+            // delegate reverse-pinvoke trips a function-signature trap under WASM AOT).
+            // Result: SDL events were never drained — clicks/keyboard/text never reached
+            // the game, the mouse only half-worked via the polled Mouse.Update() below
+            // (offset, no event handling), and the queue grew unbounded → the "frozen /
+            // slow" login screen. Drain + dispatch the queue every frame through the same
+            // HandleSdlEvent path the desktop filter uses. Desktop keeps the lower-latency
+            // SDL_SetEventFilter route (see Initialize).
+            if (OperatingSystem.IsBrowser())
+            {
+                unsafe
+                {
+                    SDL_Event sdlEvent;
+                    while (SDL_PollEvent(out sdlEvent))
+                    {
+                        HandleSdlEvent(IntPtr.Zero, &sdlEvent);
+                    }
+                }
+            }
+
             if (Profiler.InContext(Profiler.ProfilerContext.OUT_OF_CONTEXT))
             {
                 Profiler.ExitContext(Profiler.ProfilerContext.OUT_OF_CONTEXT);
