@@ -102,6 +102,17 @@ function _fatal(tag, e) {
 addEventListener('error', e => _fatal('window.onerror', e.error || e));
 addEventListener('unhandledrejection', e => _fatal('unhandledrejection', e.reason));
 
+// [inputtrace] DOM-level input confirmation for real-browser input debugging (link 1
+// of the click chain). Capture phase so we see the event even if something downstream
+// consumes it; capped to avoid flooding. Tells us whether clicks/keys reach the canvas.
+{
+  let _itc = 0;
+  const _itr = (kind, e) => { if (_itc++ < 300) console.log(`[inputtrace] ${kind} target=${e.target && e.target.tagName} @ ${e.clientX || 0},${e.clientY || 0} ${e.key ? 'key=' + e.key : 'btn=' + e.button}`); };
+  addEventListener('pointerdown', e => _itr('pointerdown', e), true);
+  addEventListener('mousedown', e => _itr('mousedown', e), true);
+  addEventListener('keydown', e => _itr('keydown', e), true);
+}
+
 // Watchdog: a silent hang (no trap) is the worst case — DrawTiled froze the
 // first frame, the blocking while-loop froze the thread. If frames stop (and
 // we're not yet in-world) or a phase sits too long, self-report once.
@@ -131,7 +142,10 @@ setInterval(() => {
 try { diag.build_sha = (await (await fetch('/build-info.json')).json()).sha || 'dev'; } catch {}
 // Production default: ship beacons to the same-origin diag sidecar so real-player
 // crashes/stalls reach Loki (dev stays console-only; uo-config can override).
-if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) diag.endpoint = '/ingest';
+// Only ship beacons to /ingest from the real (Traefik-routed) domain. On the raw dev
+// IP (http://<ip>:8080) there is no /ingest route → POSTs 405; stay console-only there.
+const _isRawIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(location.hostname);
+if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) && !_isRawIp) diag.endpoint = '/ingest';
 _log('[boot] build ' + diag.build_sha + ' session ' + diag.session);
 
 const { getAssemblyExports, getConfig, setModuleImports } = await dotnet.create();

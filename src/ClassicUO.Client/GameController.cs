@@ -39,6 +39,7 @@ namespace ClassicUO
         private bool _suppressedDraw;
         private bool _pluginsInitialized = false;
         private float _displayScale;
+        private int _inputPumpHeartbeat; // [inputtrace] browser input-pump heartbeat counter
 
         public GameController(IPluginHost pluginHost)
         {
@@ -424,8 +425,17 @@ namespace ClassicUO
                     SDL_Event sdlEvent;
                     while (SDL_PollEvent(out sdlEvent))
                     {
+                        // [inputtrace] link 2: log every non-motion event the SDL queue
+                        // hands us — proves whether emscripten actually delivers browser
+                        // input into SDL_PollEvent at all. Motion excluded (too spammy).
+                        var _et = (SDL_EventType)sdlEvent.type;
+                        if (_et != SDL_EventType.SDL_EVENT_MOUSE_MOTION)
+                            Console.WriteLine($"[inputpump] polled {_et}");
                         HandleSdlEvent(IntPtr.Zero, &sdlEvent);
                     }
+                    // Heartbeat (~every 180 frames) proves the pump loop itself runs.
+                    if ((_inputPumpHeartbeat++ % 180) == 0)
+                        Console.WriteLine($"[inputpump] alive (tick {_inputPumpHeartbeat})");
                 }
             }
 
@@ -833,6 +843,12 @@ namespace ClassicUO
 
                     Mouse.ButtonPress(buttonType);
                     Mouse.Update();
+
+                    // [inputtrace] link 3: we reached the button-down handler — log the
+                    // button + the resolved game-space position the click will act on
+                    // (so we can see both "did it dispatch" and "did it land right").
+                    if (OperatingSystem.IsBrowser())
+                        Console.WriteLine($"[handlesdl] MOUSE_BUTTON_DOWN {buttonType} pos={Mouse.Position.X},{Mouse.Position.Y}");
 
                     uint ticks = Time.Ticks;
 
