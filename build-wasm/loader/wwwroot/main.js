@@ -43,10 +43,12 @@ function setPhase(p) {
 // stack; the ring is how we recover "where you were". See DEBUGGING.md.
 const _ring = [];
 const _log = console.log.bind(console);
-console.log = (...a) => {
-  let line = '';
+// Single capture path for EVERY log line — stdout (console.log) AND native stderr
+// (printErr, defined below). Pushes to the ring (crash/stall beacon context) and runs
+// phase detection, so BOTH streams feed one diag pipeline. setPhase emits via _log (the
+// original console.log), which bypasses this, so there's no recursion.
+function _captureLine(line) {
   try {
-    line = a.join(' ');
     _ring.push(line); if (_ring.length > 80) _ring.shift();
     if (!line.startsWith('[phase] ')) {            // avoid recursion on our own emit
       const m = line.match(/\[phase\]\s+(\S+)/);
@@ -54,6 +56,10 @@ console.log = (...a) => {
       else for (const [sig, ph] of PHASE_SIGNALS) if (line.includes(sig)) { setPhase(ph); break; }
     }
   } catch {}
+}
+console.log = (...a) => {
+  let line = ''; try { line = a.join(' '); } catch {}
+  _captureLine(line);
   _log(...a);
 };
 
@@ -148,21 +154,20 @@ const _isRawIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(location.hostname);
 if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) && !_isRawIp) diag.endpoint = '/ingest';
 _log('[boot] build ' + diag.build_sha + ' session ' + diag.session);
 
-// Emscripten routes ALL native stderr to console.error — including FNA3D/SDL *info*
-// banners like "FNA3D Driver: OpenGL" (the graphics-init line), which paints harmless
-// startup logs red with a scary wasm stack. Keep the console honest: known info-level
-// native banners print as info (and drive the matching phase signal, which otherwise
-// never fired because the line is on stderr, not stdout); everything else stays a real
-// console.error so genuine faults still stand out. Pattern-keyed so more benign native
-// lines can be whitelisted here as they surface.
+// Native stderr (emscripten `err`): FNA3D / SDL drivers / FAudio / wasm-runtime traps
+// all land here. Route every line through the SAME _captureLine pipeline as stdout, so
+// the diag ring (and therefore crash/stall beacons) and phase detection see native
+// output too — this is where the most diagnostic lines (driver errors, aborts) appear,
+// and previously they bypassed the ring entirely. Then classify for color: known info
+// banners (e.g. "FNA3D Driver: OpenGL", which PHASE_SIGNALS already maps to graphics-init)
+// print as info, not a red error; everything else stays console.error so genuine native
+// faults still stand out AND are now captured. Pattern-keyed — whitelist more as needed.
 const _NATIVE_INFO = /^FNA3D Driver:/;
 function _printErr(line) {
-  if (typeof line === 'string' && _NATIVE_INFO.test(line)) {
-    if (line.startsWith('FNA3D Driver:')) setPhase('graphics-init');
-    console.info(line);
-    return;
-  }
-  console.error(line);
+  const s = typeof line === 'string' ? line : String(line);
+  _captureLine(s);
+  if (_NATIVE_INFO.test(s)) { console.info(s); return; }
+  console.error(s);
 }
 
 const { getAssemblyExports, getConfig, setModuleImports } =
