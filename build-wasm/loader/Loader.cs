@@ -115,7 +115,7 @@ public static partial class ClassicUOLoader
     [JSExport]
     public static void SetCanvasSize(int width, int height)
     {
-        try { ClassicUO.Client.Game?.SetWindowSize(width, height); }
+        try { ClassicUO.WebEntry.SetCanvasSize(width, height); }
         catch (Exception e) { Console.WriteLine("[loader] SetCanvasSize failed: " + e.Message); }
     }
 }

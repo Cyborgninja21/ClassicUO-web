@@ -27,5 +27,14 @@ namespace ClassicUO
 
             Bootstrap.Boot(null, args);
         }
+
+        // Public seam for the out-of-assembly loader's SetCanvasSize JSExport — it can't
+        // reach internal Client.Game directly. Drives ClassicUO's normal window-resize path
+        // so the canvas/backbuffer track the browser viewport (clicks land on #canvas, 1:1).
+        public static void SetCanvasSize(int width, int height)
+        {
+            if (OperatingSystem.IsBrowser())
+                Client.Game?.SetWindowSize(width, height);
+        }
     }
 }
