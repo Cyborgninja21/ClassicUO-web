@@ -42,11 +42,19 @@ function setPhase(p) {
 // Ring of recent log lines + phase detection. Hard wasm traps print with no
 // stack; the ring is how we recover "where you were". See DEBUGGING.md.
 const _ring = [];
-const _log = console.log.bind(console);
-// Single capture path for EVERY log line — stdout (console.log) AND native stderr
-// (printErr, defined below). Pushes to the ring (crash/stall beacon context) and runs
-// phase detection, so BOTH streams feed one diag pipeline. setPhase emits via _log (the
-// original console.log), which bypasses this, so there's no recursion.
+// Bind the ORIGINAL console methods up front; every override below emits through these
+// (never through another override), so capture happens exactly once — no recursion, no
+// double-logging into the ring.
+const _log  = console.log.bind(console);
+const _warn = console.warn.bind(console);
+const _err  = console.error.bind(console);
+const _info = console.info.bind(console);
+function _join(a) { try { return a.join(' '); } catch { return ''; } }
+
+// Single capture path for EVERY log line — stdout, native stderr (printErr below), AND
+// the browser's own console.warn/console.error (WebGL/CSP/etc). Pushes to the ring (crash/
+// stall beacon context) and runs phase detection, so ALL streams feed one diag pipeline.
+// setPhase emits via _log (the original console.log), which bypasses this — no recursion.
 function _captureLine(line) {
   try {
     _ring.push(line); if (_ring.length > 80) _ring.shift();
@@ -57,11 +65,18 @@ function _captureLine(line) {
     }
   } catch {}
 }
-console.log = (...a) => {
-  let line = ''; try { line = a.join(' '); } catch {}
-  _captureLine(line);
-  _log(...a);
-};
+
+// Known-benign, high-volume browser warnings → downgrade to info so they don't flag
+// yellow (still captured in the ring). FNA3D probes MSAA sample counts via
+// glGetInternalformativ; WebGL2's getInternalformatParameter rejects some formats with
+// INVALID_ENUM — harmless (FNA3D clears the error and proceeds with no MSAA for that
+// format). NOTE: Chrome may emit this WebGL warning natively (not via the page's
+// console.warn); if so this override can't intercept it and an FNA3D patch is the only fix.
+const _BENIGN_WARN = /INVALID_ENUM:\s*getInternalformatParameter/;
+
+console.log = (...a) => { _captureLine(_join(a)); _log(...a); };
+console.warn = (...a) => { const l = _join(a); _captureLine(l); (_BENIGN_WARN.test(l) ? _info : _warn)(...a); };
+console.error = (...a) => { _captureLine(_join(a)); _err(...a); };
 
 // Pull wasm-function[N] indices out of a stack — the diag-sidecar symbolicates
 // these against the symbol map for diag.build_sha (so Loki shows real names).
@@ -162,12 +177,14 @@ _log('[boot] build ' + diag.build_sha + ' session ' + diag.session);
 // banners (e.g. "FNA3D Driver: OpenGL", which PHASE_SIGNALS already maps to graphics-init)
 // print as info, not a red error; everything else stays console.error so genuine native
 // faults still stand out AND are now captured. Pattern-keyed — whitelist more as needed.
-const _NATIVE_INFO = /^FNA3D Driver:/;
+// FNA3D's GL device-info banners (Renderer/Driver/Vendor = GL_RENDERER/VERSION/VENDOR)
+// come through here too — same benign info class, just queried right after the driver line.
+const _NATIVE_INFO = /^(FNA3D Driver:|OpenGL (Renderer|Driver|Vendor):)/;
 function _printErr(line) {
   const s = typeof line === 'string' ? line : String(line);
   _captureLine(s);
-  if (_NATIVE_INFO.test(s)) { console.info(s); return; }
-  console.error(s);
+  if (_NATIVE_INFO.test(s)) { _info(s); return; }
+  _err(s);
 }
 
 const { getAssemblyExports, getConfig, setModuleImports } =
