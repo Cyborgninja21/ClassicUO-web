@@ -407,18 +407,8 @@ namespace ClassicUO
             }
         }
 
-        // Frame-loop breadcrumb (browser only). main.js routes "[step] …" lines into the diag
-        // ring WITHOUT printing them (keeps the console clean), so when a render op hard-wedges,
-        // the freeze watchdog's last-log-lines name the exact step it died in. Temporary — remove
-        // once the blocking render path is identified + fixed.
-        private static void Step(string s)
-        {
-            if (OperatingSystem.IsBrowser()) Console.WriteLine("[step] " + s);
-        }
-
         protected override void Update(GameTime gameTime)
         {
-            Step("update");
             // WASM input pump. The rAF-driven RunOneFrame() never polls SDL, and the
             // native SDL_SetEventFilter callback can't be wired on browser (the managed
             // delegate reverse-pinvoke trips a function-signature trap under WASM AOT).
@@ -469,13 +459,11 @@ namespace ClassicUO
 
             if (Scene != null && Scene.IsLoaded && !Scene.IsDestroyed)
             {
-                Step("scene.update");
                 Profiler.EnterContext(Profiler.ProfilerContext.UPDATE_WORLD);
                 Scene.Update();
                 Profiler.ExitContext(Profiler.ProfilerContext.UPDATE_WORLD);
             }
 
-            Step("ui.update");
             UIManager.Update();
 
             _totalElapsed += gameTime.ElapsedGameTime.TotalMilliseconds;
@@ -553,12 +541,10 @@ namespace ClassicUO
 
             _totalFrames++;
 
-            Step("draw");
             GraphicsDevice.Clear(Color.Black);
 
             if (Scene != null && Scene.IsLoaded && !Scene.IsDestroyed)
             {
-                Step("draw.scene");
                 Scene.Draw(_uoSpriteBatch, _renderTargets);
             }
 
@@ -583,23 +569,18 @@ namespace ClassicUO
             _uoSpriteBatch.Begin();
             if (Scene != null && Scene.IsLoaded && !Scene.IsDestroyed)
             {
-                Step("draw.sceneui:" + Scene.GetType().Name);
                 Scene.DrawUI(_uoSpriteBatch);
             }
-            Step("draw.sceneui.flush");
             _uoSpriteBatch.End();
 
-            Step("draw.ui");
             UIManager.Draw(_uoSpriteBatch);
 
-            Step("draw.cursor");
             _uoSpriteBatch.Begin();
             UO.GameCursor?.Draw(_uoSpriteBatch);
             _uoSpriteBatch.End();
 
             _uoSpriteBatch.GraphicsDevice.SetRenderTarget(null);
 
-            Step("draw.rendertargets");
             _renderTargets.Draw(_uoSpriteBatch);
 
             Profiler.ExitContext(Profiler.ProfilerContext.RENDER_FRAME);

@@ -75,7 +75,7 @@ function _captureLine(line) {
 // console.warn); if so this override can't intercept it and an FNA3D patch is the only fix.
 const _BENIGN_WARN = /INVALID_ENUM:\s*getInternalformatParameter/;
 
-console.log = (...a) => { const l = _join(a); _captureLine(l); if (l.startsWith('[step] ')) { if (_wd) { try { _wd.postMessage({ t: 'step', s: l.slice(7) }); } catch {} } return; } _log(...a); };
+console.log = (...a) => { const l = _join(a); _captureLine(l); _log(...a); };
 console.warn = (...a) => { const l = _join(a); _captureLine(l); (_BENIGN_WARN.test(l) ? _info : _warn)(...a); };
 console.error = (...a) => { _captureLine(_join(a)); _err(...a); };
 
@@ -180,7 +180,10 @@ _log('[boot] build ' + diag.build_sha + ' session ' + diag.session);
 // faults still stand out AND are now captured. Pattern-keyed — whitelist more as needed.
 // FNA3D's GL device-info banners (Renderer/Driver/Vendor = GL_RENDERER/VERSION/VENDOR)
 // come through here too — same benign info class, just queried right after the driver line.
-const _NATIVE_INFO = /^(FNA3D Driver:|OpenGL (Renderer|Driver|Vendor):)/;
+// MojoShader (FNA3D's shader translator) prints "MojoShader Profile: glsles3" etc. to
+// stderr at graphics-init — benign info, NOT a fault. It was being tagged console.error,
+// which made devtools attach the scary native (mono_wasm_invoke_jsexport) stack trace.
+const _NATIVE_INFO = /^(FNA3D Driver:|OpenGL (Renderer|Driver|Vendor):|MojoShader )/;
 function _printErr(line) {
   const s = typeof line === 'string' ? line : String(line);
   _captureLine(s);
