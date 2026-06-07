@@ -466,6 +466,29 @@ try {
   _canvas.addEventListener('pointerup',   e => { try { exports.ClassicUOLoader.InjectMouseButton(_sdlBtn(e.button), false); } catch {} });
   _canvas.addEventListener('contextmenu', e => e.preventDefault());   // right-click goes to the game, not the browser menu
   _canvas.addEventListener('wheel', e => { try { exports.ClassicUOLoader.InjectMouseWheel(e.deltaY < 0 ? 1 : -1); } catch {} e.preventDefault(); }, { passive: false });
+
+  // Keyboard: SDL's emscripten key callbacks are dead under AOT too, so JS feeds keys in.
+  // Every keydown/up sends an SDL key event (special keys map to SDLK_* below); printable
+  // chars also fire InjectText so they type into focused fields. JS modifiers → SDL_Keymod.
+  const _SDLK = {
+    Backspace: 8, Tab: 9, Enter: 13, Escape: 27, Delete: 127, ' ': 32,
+    ArrowRight: 0x4000004F, ArrowLeft: 0x40000050, ArrowDown: 0x40000051, ArrowUp: 0x40000052,
+    Home: 0x4000004A, End: 0x4000004D, PageUp: 0x4000004B, PageDown: 0x4000004E,
+    Shift: 0x400000E1, Control: 0x400000E0, Alt: 0x400000E2,
+  };
+  const _sdlKeycode = e => _SDLK[e.key] !== undefined ? _SDLK[e.key] : (e.key && e.key.length === 1 ? e.key.toLowerCase().charCodeAt(0) : 0);
+  const _sdlMod = e => (e.shiftKey ? 0x0003 : 0) | (e.ctrlKey ? 0x00C0 : 0) | (e.altKey ? 0x0300 : 0) | (e.metaKey ? 0x0C00 : 0);
+  const _gameKey = e => !e.ctrlKey && !e.metaKey && (e.key.length === 1 || ['Tab', 'Backspace', 'Delete', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '].includes(e.key));
+  _canvas.addEventListener('keydown', e => {
+    try {
+      exports.ClassicUOLoader.InjectKey(_sdlKeycode(e), _sdlMod(e), true);
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) exports.ClassicUOLoader.InjectText(e.key);
+    } catch {}
+    // Stop the browser stealing keys the game uses (Tab focus-move, Space/arrow scroll, quick-find),
+    // but leave Ctrl/Meta/Function combos alone so browser shortcuts (refresh, devtools) still work.
+    if (_gameKey(e)) e.preventDefault();
+  });
+  _canvas.addEventListener('keyup', e => { try { exports.ClassicUOLoader.InjectKey(_sdlKeycode(e), _sdlMod(e), false); } catch {} });
 }
 
 // Off-thread freeze watchdog. The diag setInterval above shares the game's single thread,

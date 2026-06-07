@@ -136,4 +136,20 @@ public static partial class ClassicUOLoader
         try { ClassicUO.WebEntry.InjectMouseWheel(dy); }
         catch (Exception e) { Console.WriteLine("[loader] InjectMouseWheel failed: " + e.Message); }
     }
+
+    // keycode = SDL_Keycode (SDLK_*), mod = SDL_Keymod bitmask, down = press/release.
+    [JSExport]
+    public static void InjectKey(int keycode, int mod, bool down)
+    {
+        try { ClassicUO.WebEntry.InjectKey(keycode, mod, down); }
+        catch (Exception e) { Console.WriteLine("[loader] InjectKey failed: " + e.Message); }
+    }
+
+    // Printable text typed into the focused control (account/password fields, chat, etc.).
+    [JSExport]
+    public static void InjectText(string text)
+    {
+        try { ClassicUO.WebEntry.InjectText(text); }
+        catch (Exception e) { Console.WriteLine("[loader] InjectText failed: " + e.Message); }
+    }
 }

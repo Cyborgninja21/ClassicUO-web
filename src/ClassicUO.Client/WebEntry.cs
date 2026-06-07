@@ -42,5 +42,7 @@ namespace ClassicUO
         // enqueue discrete events under WASM AOT.
         public static void InjectMouseButton(int sdlButton, bool down) => Client.Game?.InjectMouseButton(sdlButton, down);
         public static void InjectMouseWheel(int dy) => Client.Game?.InjectMouseWheel(dy);
+        public static void InjectKey(int keycode, int mod, bool down) => Client.Game?.InjectKey(keycode, mod, down);
+        public static void InjectText(string text) => Client.Game?.InjectText(text);
     }
 }

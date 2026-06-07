@@ -672,6 +672,30 @@ namespace ClassicUO
             HandleSdlEvent(IntPtr.Zero, &ev);
         }
 
+        // Keyboard injection (SDL's emscripten key callbacks are dead under AOT, like the mouse).
+        // keycode = SDL_Keycode (SDLK_*), mod = SDL_Keymod bitmask. Keyboard.OnKeyDown only reads
+        // key + mod, so no scancode is needed. main.js sends a key event for every keydown/up.
+        public unsafe void InjectKey(int keycode, int mod, bool down)
+        {
+            SDL_Event ev = default;
+            ev.type = (uint)(down ? SDL_EventType.SDL_EVENT_KEY_DOWN : SDL_EventType.SDL_EVENT_KEY_UP);
+            ev.key.key = (uint)keycode;
+            ev.key.mod = (SDL_Keymod)mod;
+            ev.key.down = down;
+            HandleSdlEvent(IntPtr.Zero, &ev);
+        }
+
+        // Text input — printable characters typed into the focused control. We already have the
+        // decoded string from JS, so we skip the SDL_TextInputEvent (byte*) round-trip and run the
+        // same path HandleSdlEvent's TEXT_INPUT case does, honoring the _ignoreNextTextInput gate
+        // that the preceding KEY_DOWN sets.
+        public void InjectText(string text)
+        {
+            if (_ignoreNextTextInput || string.IsNullOrEmpty(text)) return;
+            UIManager.KeyboardFocusControl?.InvokeTextInput(text);
+            Scene?.OnTextInput(text);
+        }
+
         private bool HandleSdlEvent(IntPtr userData, SDL_Event* sdlEvent)
         {
             // Don't pass SDL events to the plugin host before the plugins are initialized
