@@ -188,7 +188,7 @@ function _printErr(line) {
 }
 
 const { getAssemblyExports, getConfig, setModuleImports } =
-  await dotnet.withModuleConfig({ printErr: _printErr }).create();
+  await dotnet.withModuleConfig({ printErr: _printErr, canvas: document.getElementById('canvas') }).create();
 const exports = await getAssemblyExports(getConfig().mainAssemblyName);
 setPhase('runtime-up');
 
@@ -441,6 +441,20 @@ try {
 } catch (e) {
   // emscripten simulate_infinite_loop throws "unwind" to hand the stack to rAF — expected.
   if (!('' + e).includes('unwind')) _fatal('StartClassicUO', e);
+}
+
+// Size the FNA backbuffer to the viewport so the canvas fills the page: SDL only listens
+// for input on #canvas, so a small top-left canvas let clicks below it land on <html> and
+// never reach SDL. Driving the backbuffer from innerWidth/innerHeight keeps it full + 1:1
+// with click coords (and re-asserts size if emscripten resets the canvas CSS). Keep the
+// canvas focused so SDL's keyboard listener (bound to #canvas) receives keys, not <body>.
+{
+  const _canvas = document.getElementById('canvas');
+  const _resize = () => { try { exports.ClassicUOLoader.SetCanvasSize(window.innerWidth, window.innerHeight); } catch {} };
+  const _focus = () => { try { _canvas.focus(); } catch {} };
+  _resize(); _focus();
+  addEventListener('resize', _resize);
+  addEventListener('pointerdown', _focus, true);   // refocus on any click so keystrokes keep landing
 }
 
 // Drive FNA's frame loop from requestAnimationFrame. TickFrame() runs one Update+Draw

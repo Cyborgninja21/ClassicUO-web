@@ -6,7 +6,11 @@
   <title>Utumno Online — Web Client (ClassicUO WASM)</title>
   <script type="module" src="./main.js"></script>
 </head>
-<body style="margin:0;background:#111">
-  <canvas id="canvas" style="display:block"></canvas>
+<body style="margin:0;height:100vh;background:#111;overflow:hidden">
+  <!-- Fill the viewport: SDL only listens for input on #canvas, so a small top-left canvas
+       let clicks below it hit <html> and never reach SDL. tabindex makes it focusable so
+       SDL's keyboard listener (now bound to #canvas) receives keys instead of <body>.
+       main.js keeps the FNA backbuffer sized to the viewport so click coords stay 1:1. -->
+  <canvas id="canvas" tabindex="0" style="position:fixed;inset:0;width:100vw;height:100vh;display:block;outline:none;touch-action:none"></canvas>
 </body>
 </html>

@@ -108,4 +108,14 @@ public static partial class ClassicUOLoader
     // callback. Returns false once the game exits so JS can stop the rAF pump.
     [JSExport]
     public static bool TickFrame() => Microsoft.Xna.Framework.WasmMainLoop.Tick();
+
+    // JS (main.js) drives the canvas/backbuffer size from the browser viewport on load +
+    // resize, so the canvas fills the page — every click lands on it (not <html>) and click
+    // coords map 1:1 to the backbuffer. Routes through ClassicUO's normal window-resize path.
+    [JSExport]
+    public static void SetCanvasSize(int width, int height)
+    {
+        try { ClassicUO.Client.Game?.SetWindowSize(width, height); }
+        catch (Exception e) { Console.WriteLine("[loader] SetCanvasSize failed: " + e.Message); }
+    }
 }
