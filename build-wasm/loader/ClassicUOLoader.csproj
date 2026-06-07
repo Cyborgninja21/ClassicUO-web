@@ -14,7 +14,22 @@
     <StartupObject>ClassicUOLoader</StartupObject>
 
     <CompressionEnabled>false</CompressionEnabled>
-    <PublishTrimmed>false</PublishTrimmed>
+    <!-- TRIM (2026-06-07, full-AOT enabler). Was false (celeste kept the full untrimmed
+         method set + a selective-AOT whitelist). Untrimmed full-AOT OOM-killed CI at ~18min
+         (AOT of the entire BCL is too big). Trimming to the reachable set is what makes full
+         AOT tractable — the retail client trims then full-AOTs a 14.6MB set. Scoped to THIS
+         project (not a global -p) so net40/multi-target deps (FileEmbed, MP3Sharp) don't try
+         to self-trim (NETSDK1124). Trim-breakage on reflection-used FNA/ClassicUO types is
+         the known cost — preserved via TrimmerRootDescriptor/[DynamicDependency] as warnings
+         surface. -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <!-- partial = trim only [IsTrimmable] assemblies (the BCL/runtime-pack bulk that OOM'd
+         untrimmed AOT) at member level, and keep NON-trimmable assemblies whole: FNA,
+         ClassicUO.*, cuo, ClassicUOLoader, cuoapi, ImageSharp, MP3Sharp. So all game-code
+         types/ctors survive (no reflection breakage; neutralizes the lone FNA IL2067
+         VertexDeclaration.FromType warning at runtime) while the BCL still shrinks enough
+         for full AOT to fit. -->
+    <TrimMode>partial</TrimMode>
 
     <!-- single-threaded: no COOP/COEP, no workers, no OffscreenCanvas -->
     <WasmEnableThreads>false</WasmEnableThreads>

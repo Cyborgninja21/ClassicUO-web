@@ -27,7 +27,10 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 90: trimmed full-AOT compiles the reachable set on a 2-core runner (slower than the
+    # 22-core local build). Untrimmed full-AOT OOM-killed at ~18min; trimming (TrimMode=partial)
+    # shrinks the AOT set so it fits 7GB, but the serial 2-core AOT compile needs the headroom.
+    timeout-minutes: 90
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
