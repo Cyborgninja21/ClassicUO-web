@@ -468,20 +468,60 @@ try {
   _canvas.addEventListener('wheel', e => { try { exports.ClassicUOLoader.InjectMouseWheel(e.deltaY < 0 ? 1 : -1); } catch {} e.preventDefault(); }, { passive: false });
 }
 
-// Drive FNA's frame loop from requestAnimationFrame. TickFrame() runs one Update+Draw
-// and returns false once the game exits, at which point we stop the pump.
+// Off-thread freeze watchdog. The diag setInterval above shares the game's single thread,
+// so a HARD wedge (a blocking loop inside one frame) freezes it too — a silent death with no
+// self-report. A Web Worker runs on its own thread: the pump pings it each frame with the
+// live frame/phase/ring, and if the pings stop for >4s the Worker reports the freeze — to its
+// own console (which still surfaces in DevTools while the main thread is frozen) and to
+// /ingest if configured — with the last-known state. Silent wedges become diagnosable.
+let _wd = null;
+function _wdPing() {
+  if (!_wd) return;
+  try { _wd.postMessage({ t: 'hb', frame: diag.frame, phase: diag.phase, endpoint: diag.endpoint, build: diag.build_sha, ring: _ring.slice(-15) }); } catch {}
+}
+try {
+  const _wdSrc =
+    "let last=Date.now(),s={},fired=false;" +
+    "onmessage=function(e){var d=e.data;if(d&&d.t==='hb'){last=Date.now();s=d;fired=false;}};" +
+    "setInterval(function(){var dt=Date.now()-last;" +
+    "if(!fired&&dt>4000){fired=true;" +
+    "console.error('[FREEZE] main thread wedged '+dt+'ms — frame '+s.frame+' phase '+s.phase+' (build '+s.build+')\\n--- last log lines ---\\n'+((s.ring||[]).join('\\n')));" +
+    "if(s.endpoint){try{fetch(s.endpoint,{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'freeze',since_ms:dt,frozen_frame:s.frame,frozen_phase:s.phase,build_sha:s.build,ring:s.ring||[]})}).catch(function(){});}catch(_){}}}" +
+    "},1000);";
+  _wd = new Worker(URL.createObjectURL(new Blob([_wdSrc], { type: 'application/javascript' })));
+  _wdPing();
+} catch (e) { _log('[diag] freeze watchdog unavailable: ' + e); }
+
+// Drive FNA's frame loop from requestAnimationFrame. RESILIENT: one bad frame (an exception
+// in a single Update/Draw) is logged + beaconed and SKIPPED — the pump keeps running rather
+// than dying. Only SUSTAINED failure trips the circuit breaker and stops us, so a transient
+// glitch can't kill the client and a recurring one can't flood the log. TickFrame() returns
+// false on a clean game exit.
 console.log('[boot] starting rAF frame pump');
+let _consecErrors = 0;
+const _MAX_CONSEC_ERRORS = 30;   // ~0.5s of unbroken failure before we give up
 function _pump() {
   let alive = true;
   try {
     alive = exports.ClassicUOLoader.TickFrame();
+    _consecErrors = 0;           // a clean frame resets the breaker
   } catch (e) {
     if (('' + e).includes('unwind')) { requestAnimationFrame(_pump); return; }
-    _fatal('TickFrame@' + diag.frame, e);
-    return;
+    diag.frameErrors = (diag.frameErrors || 0) + 1;
+    _consecErrors++;
+    if (_consecErrors <= 2 || _consecErrors === _MAX_CONSEC_ERRORS)   // first of a burst + the trip
+      _log('[frame-error] #' + diag.frameErrors + ' at frame ' + diag.frame + ' (consec ' + _consecErrors + '): ' + ((e && e.stack) || e));
+    if (_consecErrors === 1)
+      beacon('frame-error', { frame: diag.frame, message: String((e && e.message) || e), stack: (e && e.stack) || '', wasm_frames: wasmFrames((e && e.stack) || ''), ring: _ring.slice(-20) });
+    if (_consecErrors >= _MAX_CONSEC_ERRORS) {
+      _fatal('TickFrame-persistent@' + diag.frame, e);   // sustained failure — stop cleanly
+      return;
+    }
+    // otherwise fall through: skip this frame, keep the loop alive
   }
   diag.frame++; diag.lastTickTs = performance.now();
-  if (diag.frame === 1) console.log('[boot] first frame ticked');
+  if ((diag.frame & 7) === 0) _wdPing();                  // heartbeat the freeze watchdog (~every 8 frames)
+  if (diag.frame === 1) { console.log('[boot] first frame ticked'); _wdPing(); }
   if (alive) requestAnimationFrame(_pump);
   else { console.log('[boot] game exited; rAF pump stopped after ' + diag.frame + ' frames'); beacon('exit', { frames: diag.frame }); }
 }
