@@ -362,6 +362,7 @@ namespace ClassicUO.Game.Managers
         {
             _renderLists.Clear();
 
+            if (System.OperatingSystem.IsBrowser()) System.Console.WriteLine("[step] ui.sort");
             SortControlsByInfo();
 
             batcher.Begin();
@@ -372,14 +373,17 @@ namespace ClassicUO.Game.Managers
             for (LinkedListNode<Gump> last = Gumps.Last; last != null; last = last.Previous)
             {
                 Control g = last.Value;
+                if (System.OperatingSystem.IsBrowser()) System.Console.WriteLine("[step] ui.add:" + g.GetType().Name);
                 layerDepth+=10;
                 g.AddToRenderLists(_renderLists, g.X, g.Y, ref layerDepth);
             }
 
+            if (System.OperatingSystem.IsBrowser()) System.Console.WriteLine("[step] ui.drawrenderlists");
             Profiler.EnterContext(Profiler.ProfilerContext.RENDER_FRAME_UI);
             _renderLists.DrawRenderLists(batcher, sbyte.MaxValue);
             Profiler.ExitContext(Profiler.ProfilerContext.RENDER_FRAME_UI);
 
+            if (System.OperatingSystem.IsBrowser()) System.Console.WriteLine("[step] ui.end");
             batcher.SetStencil(null);
             batcher.End();
         }
