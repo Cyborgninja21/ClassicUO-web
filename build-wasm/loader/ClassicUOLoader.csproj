@@ -23,12 +23,18 @@
     <WasmEnableWebcil>false</WasmEnableWebcil>
     <WasmBuildNative>true</WasmBuildNative>
     <WasmRunWasmOpt>true</WasmRunWasmOpt>
-    <!-- Selective AOT (corlib+FNA+game; interpret the rest). AOT'd code does NOT use
-         the interpreter, so it sidesteps the Mono SGen `interp_mark_stack` GC OOB that
-         blocks the interpreter at login. The two earlier AOT blockers are now fixed:
-         the async HttpClient preload became a JS-fetch + sync MEMFS write (no .NET async
-         across the interp<->AOT boundary), and the SDL i64 pinvoke mismatches got the
-         SDL__/wasm_ shims. Remaining risk = more FNA/FNA3D struct-by-value pinvokes. -->
+    <!-- FULL AOT (2026-06-07). Previously this was SELECTIVE AOT (corlib+FNA+game on a
+         whitelist; everything else force-interpreted — see the disabled AOTOnlyWhitelist
+         target below). That left most of the BCL running under the interpreter, and a
+         periodic SGen GC walking an interpreter frame hit Mono's `interp_mark_stack` OOB
+         bug → permanent main-thread wedge ~700-1600 frames into the login screen
+         (non-deterministic; confirmed via the freeze watchdog). The retail ClassicUO web
+         client is full-AOT with ZERO interpreter (25,236 wasm fns) and never hits this.
+         Cure = AOT everything so no interpreter frame can ever be on the stack at GC time.
+         The earlier AOT blockers are fixed (async HttpClient→JS-fetch+sync MEMFS; SDL i64
+         pinvoke→SDL__/wasm_ shims). Remaining risk = more FNA/FNA3D struct-by-value
+         pinvoke traps surfacing now that ALL assemblies AOT — each gets the same
+         [UnmanagedCallersOnly]/shim fix as patches 001-003. -->
     <RunAOTCompilation>true</RunAOTCompilation>
     <WasmDedup>false</WasmDedup>
     <WasmStripILAfterAOT>false</WasmStripILAfterAOT>
@@ -76,9 +82,10 @@
     </Reference>
   </ItemGroup>
 
-  <!-- Selective-AOT whitelist (celeste AOTOnlyCorlib pattern): only these are AOT'd,
-       the rest interpreted. corlib is required or the game AOT won't link
-       (aot_wrapper_alloc_*). cuo = ClassicUO.Client. -->
+  <!-- DISABLED 2026-06-07 (full-AOT switch). This whitelist drove the selective-AOT
+       force-interpret (the AOTOnlyWhitelist target below, now commented out). RETAINED
+       so reverting to selective AOT is a one-line uncomment of that target. corlib note:
+       it's required in any AOT set or the game AOT won't link (aot_wrapper_alloc_*). -->
   <ItemGroup>
     <AOTWhitelist Include="System.Private.CoreLib" />
     <AOTWhitelist Include="System.Collections" />
@@ -104,6 +111,9 @@
     <PropertyGroup><PublishTrimmed>true</PublishTrimmed></PropertyGroup>
   </Target>
 
+  <!-- FULL AOT: nothing force-interpreted → RunAOTCompilation AOT-compiles every assembly
+       in the app closure. To revert to selective AOT, uncomment this target (it force-
+       interprets every assembly not on the AOTWhitelist above).
   <Target Name="AOTOnlyWhitelist" BeforeTargets="_WasmAotCompileApp">
     <PropertyGroup>
       <_AOTWhitelist>|@(AOTWhitelist, '|')|</_AOTWhitelist>
@@ -113,6 +123,10 @@
         Condition="!$([System.String]::new('$(_AOTWhitelist)').Contains('|%(Filename)|'))" />
     </ItemGroup>
     <Message Text="Selective AOT: only whitelist assemblies are AOT-compiled" Importance="High" />
+  </Target>
+  -->
+  <Target Name="AnnounceFullAOT" BeforeTargets="_WasmAotCompileApp">
+    <Message Text="FULL AOT: all app-closure assemblies are AOT-compiled (no interpreter fallback)" Importance="High" />
   </Target>
 
 
