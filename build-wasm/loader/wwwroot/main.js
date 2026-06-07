@@ -148,7 +148,25 @@ const _isRawIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(location.hostname);
 if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) && !_isRawIp) diag.endpoint = '/ingest';
 _log('[boot] build ' + diag.build_sha + ' session ' + diag.session);
 
-const { getAssemblyExports, getConfig, setModuleImports } = await dotnet.create();
+// Emscripten routes ALL native stderr to console.error — including FNA3D/SDL *info*
+// banners like "FNA3D Driver: OpenGL" (the graphics-init line), which paints harmless
+// startup logs red with a scary wasm stack. Keep the console honest: known info-level
+// native banners print as info (and drive the matching phase signal, which otherwise
+// never fired because the line is on stderr, not stdout); everything else stays a real
+// console.error so genuine faults still stand out. Pattern-keyed so more benign native
+// lines can be whitelisted here as they surface.
+const _NATIVE_INFO = /^FNA3D Driver:/;
+function _printErr(line) {
+  if (typeof line === 'string' && _NATIVE_INFO.test(line)) {
+    if (line.startsWith('FNA3D Driver:')) setPhase('graphics-init');
+    console.info(line);
+    return;
+  }
+  console.error(line);
+}
+
+const { getAssemblyExports, getConfig, setModuleImports } =
+  await dotnet.withModuleConfig({ printErr: _printErr }).create();
 const exports = await getAssemblyExports(getConfig().mainAssemblyName);
 setPhase('runtime-up');
 
