@@ -1153,6 +1153,7 @@ namespace ClassicUO.Game.Scenes
 
         public override void DrawUI(UltimaBatcher2D batcher)
         {
+            if (System.OperatingSystem.IsBrowser()) System.Console.WriteLine("[step] sceneui.healthlines");
             _healthLinesManager.Draw(batcher, 0f);
 
             if (!UIManager.IsMouseOverWorld)
@@ -1160,7 +1161,9 @@ namespace ClassicUO.Game.Scenes
                 SelectedObject.Object = null;
             }
 
+            if (System.OperatingSystem.IsBrowser()) System.Console.WriteLine("[step] sceneui.worldtext.process");
             _world.WorldTextManager.ProcessWorldText(true);
+            if (System.OperatingSystem.IsBrowser()) System.Console.WriteLine("[step] sceneui.worldtext.draw");
             _world.WorldTextManager.Draw(batcher, Camera.Bounds.X, Camera.Bounds.Y, 0);
         }
 

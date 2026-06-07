@@ -583,9 +583,10 @@ namespace ClassicUO
             _uoSpriteBatch.Begin();
             if (Scene != null && Scene.IsLoaded && !Scene.IsDestroyed)
             {
-                Step("draw.sceneui");
+                Step("draw.sceneui:" + Scene.GetType().Name);
                 Scene.DrawUI(_uoSpriteBatch);
             }
+            Step("draw.sceneui.flush");
             _uoSpriteBatch.End();
 
             Step("draw.ui");
