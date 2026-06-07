@@ -127,10 +127,20 @@ namespace ClassicUO.Input
                 Position.Y = (int)y;
             }
 
-            // Scale the mouse coordinates for the faux-backbuffer and DPI settings
-            Position.X = (int) ((double) Position.X * (Client.Game.GraphicManager.PreferredBackBufferWidth / Client.Game.Window.ClientBounds.Width) / Client.Game.DpiScale);
+            // Scale the mouse coordinates for the faux-backbuffer and DPI settings.
+            // Browser: emscripten SDL reports the cursor already in the canvas's logical
+            // space, which equals the render backbuffer (the canvas IS the window — there
+            // is no separate OS DPI layer like desktop). Applying the desktop "* backbuffer
+            // / clientBounds / DpiScale" correction there divides by devicePixelRatio, which
+            // shrinks every click toward the top-left on HiDPI displays so it misses its
+            // target (the "registers input but not 1:1 / can't click" symptom). Map straight
+            // through on browser; keep the desktop correction everywhere else.
+            if (!System.OperatingSystem.IsBrowser())
+            {
+                Position.X = (int) ((double) Position.X * (Client.Game.GraphicManager.PreferredBackBufferWidth / Client.Game.Window.ClientBounds.Width) / Client.Game.DpiScale);
 
-            Position.Y = (int) ((double) Position.Y * (Client.Game.GraphicManager.PreferredBackBufferHeight / Client.Game.Window.ClientBounds.Height) / Client.Game.DpiScale);
+                Position.Y = (int) ((double) Position.Y * (Client.Game.GraphicManager.PreferredBackBufferHeight / Client.Game.Window.ClientBounds.Height) / Client.Game.DpiScale);
+            }
 
             IsDragging = LButtonPressed || RButtonPressed || MButtonPressed;
         }
