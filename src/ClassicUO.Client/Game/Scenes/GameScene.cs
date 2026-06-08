@@ -118,6 +118,14 @@ namespace ClassicUO.Game.Scenes
             WorldViewportGump viewport = new WorldViewportGump(_world, this);
             UIManager.Add(viewport, false);
 
+            if (OperatingSystem.IsBrowser())
+            {
+                // Browser: the world view otherwise opens as a small 600x480 window in the
+                // top-left. Fill it to the canvas (same as toggling GameWindowFullSize) so it
+                // matches the public web client.
+                Client.Game.MaximizeGameWindow();
+            }
+
             if (!ProfileManager.CurrentProfile.TopbarGumpIsDisabled)
             {
                 TopBarGump.Create(_world);

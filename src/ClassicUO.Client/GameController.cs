@@ -672,6 +672,37 @@ namespace ClassicUO
             HandleSdlEvent(IntPtr.Zero, &ev);
         }
 
+        // Mouse-motion injection. The MOUSE_MOTION case in HandleSdlEvent is where gump/world
+        // dragging runs (Mouse.Update() then Scene/UIManager.OnMouseDragging) — without it the
+        // cursor still follows (Mouse.Update's poll drives it) but drags never fire. main.js
+        // calls this on every canvas pointermove. The handler re-polls the real position via
+        // Mouse.Update(), so no coordinates are needed here.
+        public unsafe void InjectMouseMotion()
+        {
+            Mouse.MouseInWindow = true;
+            SDL_Event ev = default;
+            ev.type = (uint)SDL_EventType.SDL_EVENT_MOUSE_MOTION;
+            HandleSdlEvent(IntPtr.Zero, &ev);
+        }
+
+        // Browser: fill the world viewport to the canvas. The desktop default is a small
+        // 600x480 window in the top-left; this mirrors toggling GameWindowFullSize in Options.
+        // No-op until the WorldViewportGump exists (in-game). Called on world-entry and on
+        // every browser resize (via WebEntry.SetCanvasSize).
+        public void MaximizeGameWindow()
+        {
+            var vp = UIManager.GetGump<ClassicUO.Game.UI.Gumps.WorldViewportGump>();
+            if (vp == null)
+                return;
+            vp.ResizeGameWindow(new Point(Window.ClientBounds.Width, Window.ClientBounds.Height));
+            vp.SetGameWindowPosition(new Point(-5, -5));
+            if (ProfileManager.CurrentProfile != null)
+            {
+                ProfileManager.CurrentProfile.GameWindowFullSize = true;
+                ProfileManager.CurrentProfile.GameWindowPosition = vp.Location;
+            }
+        }
+
         // Keyboard injection (SDL's emscripten key callbacks are dead under AOT, like the mouse).
         // keycode = SDL_Keycode (SDLK_*), mod = SDL_Keymod bitmask. Keyboard.OnKeyDown only reads
         // key + mod, so no scancode is needed. main.js sends a key event for every keydown/up.

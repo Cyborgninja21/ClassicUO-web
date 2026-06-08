@@ -137,6 +137,15 @@ public static partial class ClassicUOLoader
         catch (Exception e) { Console.WriteLine("[loader] InjectMouseWheel failed: " + e.Message); }
     }
 
+    // Fired on every canvas pointermove. Drives the SDL_EVENT_MOUSE_MOTION path so gump/world
+    // dragging works (the cursor follows via polling, but drags need the motion event).
+    [JSExport]
+    public static void InjectMouseMotion()
+    {
+        try { ClassicUO.WebEntry.InjectMouseMotion(); }
+        catch (Exception e) { Console.WriteLine("[loader] InjectMouseMotion failed: " + e.Message); }
+    }
+
     // keycode = SDL_Keycode (SDLK_*), mod = SDL_Keymod bitmask, down = press/release.
     [JSExport]
     public static void InjectKey(int keycode, int mod, bool down)

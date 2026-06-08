@@ -353,7 +353,7 @@ async function artCache() {
 // instantly from cache with no re-download — the same one-time cost the picker pays.
 async function loadFromDevServer(cache) {
   try {
-    const r = await fetch('/uo-data/manifest.json');
+    const r = await fetch('/uo-data/manifest.json', { cache: 'no-store' });
     if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return false;
     const list = (await r.json()).filter(f => f && f !== 'manifest.json');
     if (!list.length) return false;
@@ -478,8 +478,12 @@ try {
   // we inject only the discrete button/wheel. DOM button → SDL button (left 1, middle 2,
   // right 3, x1 4, x2 5).
   const _sdlBtn = b => b === 1 ? 2 : b === 2 ? 3 : b === 3 ? 4 : b === 4 ? 5 : 1;
-  _canvas.addEventListener('pointerdown', e => { try { exports.ClassicUOLoader.InjectMouseButton(_sdlBtn(e.button), true); } catch {} });
+  _canvas.addEventListener('pointerdown', e => { try { _canvas.setPointerCapture(e.pointerId); } catch {} try { exports.ClassicUOLoader.InjectMouseButton(_sdlBtn(e.button), true); } catch {} });
   _canvas.addEventListener('pointerup',   e => { try { exports.ClassicUOLoader.InjectMouseButton(_sdlBtn(e.button), false); } catch {} });
+  // Motion: SDL's emscripten mousemove events are dead under AOT, so the MOUSE_MOTION path
+  // (where gump/world dragging runs) never fires from SDL. Feed it on every pointermove so
+  // dragging works (the cursor itself follows via Mouse.Update's position poll).
+  _canvas.addEventListener('pointermove', () => { try { exports.ClassicUOLoader.InjectMouseMotion(); } catch {} });
   _canvas.addEventListener('contextmenu', e => e.preventDefault());   // right-click goes to the game, not the browser menu
   _canvas.addEventListener('wheel', e => { try { exports.ClassicUOLoader.InjectMouseWheel(e.deltaY < 0 ? 1 : -1); } catch {} e.preventDefault(); }, { passive: false });
 
@@ -495,16 +499,22 @@ try {
   const _sdlKeycode = e => _SDLK[e.key] !== undefined ? _SDLK[e.key] : (e.key && e.key.length === 1 ? e.key.toLowerCase().charCodeAt(0) : 0);
   const _sdlMod = e => (e.shiftKey ? 0x0003 : 0) | (e.ctrlKey ? 0x00C0 : 0) | (e.altKey ? 0x0300 : 0) | (e.metaKey ? 0x0C00 : 0);
   const _gameKey = e => !e.ctrlKey && !e.metaKey && (e.key.length === 1 || ['Tab', 'Backspace', 'Delete', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '].includes(e.key));
+  // Track held keys so they can be released on blur — the browser DROPS keyup when the window
+  // loses focus (alt-tab / click away), otherwise leaving movement/keys stuck down in-game.
+  const _heldKeys = new Map();
   _canvas.addEventListener('keydown', e => {
     try {
       exports.ClassicUOLoader.InjectKey(_sdlKeycode(e), _sdlMod(e), true);
       if (e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) exports.ClassicUOLoader.InjectText(e.key);
     } catch {}
+    _heldKeys.set(e.key, { kc: _sdlKeycode(e), mod: _sdlMod(e) });
     // Stop the browser stealing keys the game uses (Tab focus-move, Space/arrow scroll, quick-find),
     // but leave Ctrl/Meta/Function combos alone so browser shortcuts (refresh, devtools) still work.
     if (_gameKey(e)) e.preventDefault();
   });
-  _canvas.addEventListener('keyup', e => { try { exports.ClassicUOLoader.InjectKey(_sdlKeycode(e), _sdlMod(e), false); } catch {} });
+  _canvas.addEventListener('keyup', e => { _heldKeys.delete(e.key); try { exports.ClassicUOLoader.InjectKey(_sdlKeycode(e), _sdlMod(e), false); } catch {} });
+  // Window blur (alt-tab, click outside the page) — release every still-held key so nothing sticks.
+  addEventListener('blur', () => { for (const k of _heldKeys.values()) { try { exports.ClassicUOLoader.InjectKey(k.kc, k.mod, false); } catch {} } _heldKeys.clear(); });
 }
 
 // Off-thread freeze watchdog. The diag setInterval above shares the game's single thread,

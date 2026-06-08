@@ -252,6 +252,8 @@ namespace ClassicUO.Game
         }
         */
 
+        private static int _mobSkipLogCount;
+
         public void Update()
         {
             if (Player != null)
@@ -300,7 +302,23 @@ namespace ClassicUO.Game
 
                 foreach (Mobile mob in Mobiles.Values)
                 {
-                    mob.Update();
+                    // A mobile whose body animation art is missing (e.g. a trimmed local art set,
+                    // or an exotic body absent from the loaded frames) would NRE in Update() and
+                    // abort this entire loop — hiding EVERY character on screen. Skip just the one
+                    // bad mobile so the rest still update and render.
+                    try
+                    {
+                        mob.Update();
+                    }
+                    catch (System.Exception _mobEx)
+                    {
+                        if (_mobSkipLogCount < 8)
+                        {
+                            _mobSkipLogCount++;
+                            System.Console.WriteLine($"[mob-skip] graphic=0x{mob.Graphic:X4} serial=0x{mob.Serial:X8} player={(mob == Player)}: {_mobEx.GetType().Name}: {_mobEx.Message}");
+                        }
+                        continue;
+                    }
 
                     if (do_delete && mob.Distance > ClientViewRange /*CheckToRemove(mob, ClientViewRange)*/)
                     {
