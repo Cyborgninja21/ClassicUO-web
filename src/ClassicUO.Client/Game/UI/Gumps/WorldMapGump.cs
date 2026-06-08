@@ -547,7 +547,16 @@ namespace ClassicUO.Game.UI.Gumps
             _map = new Map.Map(World, index);
 
 
-            if (_loadingTask is { Status: TaskStatus.Running })
+            if (OperatingSystem.IsBrowser())
+            {
+                // WASM is single-threaded; Task.Run/ContinueWith schedule on the threadpool,
+                // whose reverse-pinvoke dies under AOT and HARD-EXITS the runtime — opening the
+                // World Map killed the whole client (".NET runtime already exited with 1"). LoadMap
+                // is CPU work (read map files, build the radar pixel buffer), so run it synchronously
+                // on the main thread: a brief hitch on first open, not a crash.
+                LoadMap(index);
+            }
+            else if (_loadingTask is { Status: TaskStatus.Running })
                 _loadingTask = _loadingTask.ContinueWith(_ => LoadMap(index));
             else
                 _loadingTask = Task.Run(() => LoadMap(index));
@@ -1113,6 +1122,7 @@ namespace ClassicUO.Game.UI.Gumps
                 int fixedWidth = Client.Game.UO.FileManager.Maps.MapBlocksSize[mapIndex, 0];
                 int fixedHeight = Client.Game.UO.FileManager.Maps.MapBlocksSize[mapIndex, 1];
 
+
                 _mapTexture?.Dispose();
 
                 var mapFile = Client.Game.UO.FileManager.Maps.GetMapFile(mapIndex);
@@ -1166,21 +1176,42 @@ namespace ClassicUO.Game.UI.Gumps
                         var allZ = new sbyte[size];
                         var staticBlocks = new StaticsBlock[32];
 
-                        using var img = new SixLabors.ImageSharp.Image<Byte4>(new SixLabors.ImageSharp.Configuration()
+                        // Browser: allocate the radar buffer ourselves. A 7170x4098 Byte4 image is ~117 MB,
+                        // and ImageSharp's contiguous single-pixel-memory path fails for that under wasm
+                        // (DangerousTryGetSinglePixelMemory returns false) -> an empty span -> the fill loop
+                        // throws -> a black map. A plain Byte4[] is contiguous and feeds SetData directly.
+                        // Desktop keeps the ImageSharp image for its PNG-encode disk cache.
+                        bool _wmShared = OperatingSystem.IsBrowser();
+                        using var img = _wmShared ? null : new SixLabors.ImageSharp.Image<Byte4>(new SixLabors.ImageSharp.Configuration()
                         {
                             PreferContiguousImageBuffers = true
                         }, realWidth + OFFSET_PIX, realHeight + OFFSET_PIX);
 
-                        img.DangerousTryGetSinglePixelMemory(out var imgBuffer);
-                        var imgSpan = imgBuffer.Span;
+                        Byte4[] _radarPixels = null;
+                        Span<Byte4> imgSpan;
+                        if (_wmShared)
+                        {
+                            _radarPixels = new Byte4[size];
+                            imgSpan = _radarPixels;
+                        }
+                        else
+                        {
+                            img.DangerousTryGetSinglePixelMemory(out var imgBuffer);
+                            imgSpan = imgBuffer.Span;
+                        }
+
 
                         var huesLoader = Client.Game.UO.FileManager.Hues;
 
                         int bx, by, mapX = 0, mapY = 0, x, y;
 
-                        // Workaroud to avoid accessing map files from 2 sources at the same time
-                        UOFile fileMap = null;
-                        UOFile fileStatics = null;
+                        // On desktop LoadMap runs on the threadpool, so it opens its OWN file handles
+                        // to avoid racing the game's renderer on a shared one. In the browser the load is
+                        // synchronous (single-threaded) — no race — and constructing a second
+                        // MemoryMappedFile at runtime under wasm-AOT throws "function signature mismatch"
+                        // (MMFileReader..ctor). So reuse the FileManager's already-open handles instead.
+                        FileReader fileMap = null;
+                        FileReader fileStatics = null;
 
                         for (bx = 0; bx < fixedWidth; ++bx)
                         {
@@ -1197,7 +1228,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                                 if (fileMap == null)
                                 {
-                                    fileMap = new UOFile(indexMap.MapFile.FilePath);
+                                    fileMap = _wmShared ? indexMap.MapFile : new UOFile(indexMap.MapFile.FilePath);
                                 }
 
                                 fileMap.Seek((long)indexMap.MapAddress, System.IO.SeekOrigin.Begin);
@@ -1221,7 +1252,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                                 if (fileStatics == null)
                                 {
-                                    fileStatics = new UOFile(indexMap.StaticFile.FilePath);
+                                    fileStatics = _wmShared ? indexMap.StaticFile : new UOFile(indexMap.StaticFile.FilePath);
                                 }
 
                                 fileStatics.Seek((long)indexMap.StaticAddress, System.IO.SeekOrigin.Begin);
@@ -1250,8 +1281,13 @@ namespace ClassicUO.Game.UI.Gumps
                             }
                         }
 
-                        fileMap?.Dispose();
-                        fileStatics?.Dispose();
+                        // Only dispose handles WE opened (desktop). The browser path borrows the
+                        // FileManager's live handles — disposing them would break world rendering.
+                        if (!_wmShared)
+                        {
+                            fileMap?.Dispose();
+                            fileStatics?.Dispose();
+                        }
 
                         int real_width_less_one = realWidth - 1;
                         int real_height_less_one = realHeight - 1;
@@ -1321,19 +1357,36 @@ namespace ClassicUO.Game.UI.Gumps
 
                         //quantizer.Clear();
 
-                        var imageEncoder = new PngEncoder
-                        {
-                            ColorType = PngColorType.Palette,
-                            CompressionLevel = PngCompressionLevel.DefaultCompression,
-                            SkipMetadata = true,
-                            FilterMethod = PngFilterMethod.None,
-                            ChunkFilter = PngChunkFilter.ExcludeAll,
-                            TransparentColorMode = PngTransparentColorMode.Clear,
-                        };
 
-                        Directory.CreateDirectory(_mapsCachePath);
-                        using var stream2 = File.Create(fileMapPath);
-                        img.Save(stream2, imageEncoder);
+                        if (OperatingSystem.IsBrowser())
+                        {
+                            // Browser: build the Texture2D straight from the radar buffer we already
+                            // hold. The desktop path PNG-encodes (palette-quantize) -> saves -> reloads
+                            // -> decodes; under wasm the ImageSharp quantizer and the giant-PNG decoder
+                            // raw-trap ("index out of bounds"), and the file round-trip is pointless when
+                            // the pixels are right here. ImageSharp's Byte4 is RGBA-packed, matching
+                            // FNA's SurfaceFormat.Color byte order, so SetData is a straight byte copy.
+                            int tw = realWidth + OFFSET_PIX, th = realHeight + OFFSET_PIX;
+                            var tex = new Texture2D(Client.Game.GraphicsDevice, tw, th, false, SurfaceFormat.Color);
+                            tex.SetData(_radarPixels);
+                            _mapTexture = tex;
+                        }
+                        else
+                        {
+                            var imageEncoder = new PngEncoder
+                            {
+                                ColorType = PngColorType.Palette,
+                                CompressionLevel = PngCompressionLevel.DefaultCompression,
+                                SkipMetadata = true,
+                                FilterMethod = PngFilterMethod.None,
+                                ChunkFilter = PngChunkFilter.ExcludeAll,
+                                TransparentColorMode = PngTransparentColorMode.Clear,
+                            };
+
+                            Directory.CreateDirectory(_mapsCachePath);
+                            using var stream2 = File.Create(fileMapPath);
+                            img.Save(stream2, imageEncoder);
+                        }
                     }
                     catch (Exception ex)
                     {
