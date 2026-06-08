@@ -23,6 +23,10 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: cyborgninja21/classicuo-web
   STATICS_TAG: toolchain-26933625837
+  # GC-wedge fuse: fetch-statics.sh overlays a fuse-patched libmono-ee-interp.a from this
+  # release onto the base pack (the pinned upstream pack predates patches/004). Bump to
+  # invalidate the statics cache when the fuse lib changes.
+  STATICS_FUSE_TAG: gcfuse-interp-004
 
 jobs:
   build:
@@ -41,7 +45,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build-wasm/statics
-          key: ${{ env.STATICS_TAG }}
+          key: ${{ env.STATICS_TAG }}-${{ env.STATICS_FUSE_TAG }}
 
       - name: Cache .NET SDK + wasm-tools
         uses: actions/cache@v4
