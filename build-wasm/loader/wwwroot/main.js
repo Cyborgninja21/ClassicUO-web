@@ -241,6 +241,53 @@ const UO_FILES_OPTIONAL = [
   "multi.mul", "multi.idx", "Multimap.rle", "verdata.mul",
 ];
 
+// Tiered art contract for completeness validation. UO_FILES (the base world set) plus
+// the BASE BODY ANIMATIONS: without anim.mul/anim.idx the client renders NO mobiles —
+// the player and humanoid NPCs are invisible (body 0x191 lives in anim.mul, not the
+// AnimationFrame*.uop UOP frames). They were previously mis-classified OPTIONAL, which
+// is exactly how a bodyless world shipped silently. A missing/corrupt REQUIRED file is
+// now surfaced loudly (console + on-screen banner), never a silent partial load.
+const UO_FILES_REQUIRED = UO_FILES.concat(["anim.mul", "anim.idx"]);
+// Render MORE bodies/items, but the client is usable without them — warn, don't fail.
+const UO_FILES_RECOMMENDED = [
+  "AnimationFrame1.uop", "AnimationFrame2.uop", "AnimationFrame3.uop", "AnimationFrame4.uop",
+  "anim2.mul", "anim2.idx", "anim3.mul", "anim3.idx", "multi.mul", "multi.idx", "Multimap.rle",
+];
+
+// --- Art integrity. The manifest may carry {name, size, sha256} per file (see
+// .run/gen-art-manifest.py). We verify size on every load and sha256 on download in a
+// secure context (crypto.subtle needs https/localhost; raw-IP HTTP dev degrades to
+// size-only). A truncated/corrupt download is rejected and refetched rather than
+// written, so corruption never reaches the game's virtual filesystem. ---
+async function sha256Hex(buf) {
+  if (!(typeof crypto !== 'undefined' && crypto.subtle)) return null;
+  const d = await crypto.subtle.digest('SHA-256', buf);
+  let s = ''; for (const b of new Uint8Array(d)) s += b.toString(16).padStart(2, '0');
+  return s;
+}
+// null if OK, else a human-readable reason. hash=false skips the (large) digest.
+async function checkIntegrity(entry, buf, hash) {
+  if (entry && entry.size != null && buf.length !== entry.size) return 'size ' + buf.length + '≠' + entry.size;
+  if (hash && entry && entry.sha256) { const h = await sha256Hex(buf); if (h && h !== entry.sha256) return 'sha256 mismatch'; }
+  return null;
+}
+// Accept legacy ["name", ...] or integrity [{name,size,sha256}, ...]; -> Map name->entry.
+function parseManifest(json) {
+  const m = new Map();
+  for (const e of json || []) {
+    const entry = typeof e === 'string' ? { name: e } : e;
+    if (entry && entry.name && entry.name !== 'manifest.json') m.set(entry.name, entry);
+  }
+  return m;
+}
+async function fetchManifest() {
+  try {
+    const r = await fetch('/uo-data/manifest.json', { cache: 'no-store' });
+    if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return null;
+    return parseManifest(await r.json());
+  } catch { return null; }
+}
+
 function artStatus(msg) { const el = document.getElementById('art-status'); if (el) el.textContent = msg; _log('[art] ' + msg); }
 
 async function opfsArtDir(create) {
@@ -271,6 +318,18 @@ async function loadFromOpfs() {
     exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
     artStatus('loading cached art… ' + (++i) + '/' + names.length);
   }
+}
+async function opfsArtKeys() {
+  try {
+    const dir = await opfsArtDir(false);
+    const names = [];
+    for await (const [name, handle] of dir.entries()) if (handle.kind === 'file') names.push(name);
+    return names;
+  } catch { return []; }
+}
+async function opfsSizeOf(name) {
+  try { return (await (await (await opfsArtDir(false)).getFileHandle(name)).getFile()).size; }
+  catch { return null; }
 }
 
 // IndexedDB art cache — the persistent store for INSECURE contexts (plain-HTTP LAN
@@ -318,6 +377,8 @@ async function artCache() {
       kind: 'opfs',
       hasAll: opfsHasAllArt,
       load: loadFromOpfs,
+      keys: opfsArtKeys,
+      sizeOf: opfsSizeOf,
       write: async (f, buf) => { const d = await opfsArtDir(true); await opfsWrite(d, f, buf); },
     };
     return _artCache;
@@ -338,6 +399,8 @@ async function artCache() {
           }
         },
         write: (f, buf) => idbPut(db, f, buf),
+        keys: async () => { try { return await idbKeys(db); } catch { return []; } },
+        sizeOf: async (n) => { try { const v = await idbGet(db, n); return v ? (v.byteLength ?? v.length ?? null) : null; } catch { return null; } },
       };
       return _artCache;
     } catch { /* IndexedDB blocked (private mode etc.) — fall through to no-cache */ }
@@ -351,28 +414,61 @@ async function artCache() {
 // never crashes and the picker still takes over. On success it ALSO caches every
 // file into the persistent store (OPFS or IndexedDB), so the *next* visit loads
 // instantly from cache with no re-download — the same one-time cost the picker pays.
-async function loadFromDevServer(cache) {
+async function loadFromDevServer(cache, manifest) {
   try {
-    const r = await fetch('/uo-data/manifest.json', { cache: 'no-store' });
-    if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return false;
-    const list = (await r.json()).filter(f => f && f !== 'manifest.json');
-    if (!list.length) return false;
+    const entries = [...(manifest || new Map()).values()];
+    if (!entries.length) return false;
     const baseUrl = new URL('/uo-data/', location.href).href;
     // "(one time)" only when there's a persistent cache to write into; without one we
     // don't over-promise — the fetch would repeat each load.
     const once = cache ? ' (one time)' : '';
     artStatus('downloading art' + once + '…');
+    const hash = !!(typeof crypto !== 'undefined' && crypto.subtle);
     let i = 0;
-    for (const f of list) {
-      const resp = await fetch(baseUrl + f);
-      if (!resp.ok) throw new Error('art fetch ' + f + ' -> ' + resp.status);
-      const buf = new Uint8Array(await resp.arrayBuffer());
-      exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
-      if (cache) { try { await cache.write(f, buf); } catch {} }  // cache for next visit
-      artStatus('downloading art' + once + '… ' + (++i) + '/' + list.length + ' (' + f + ')');
+    for (const entry of entries) {
+      await fetchValidateWrite(baseUrl, entry, cache, hash);
+      artStatus('downloading art' + once + '… ' + (++i) + '/' + entries.length + ' (' + entry.name + ')');
     }
     return true;
-  } catch { return false; }
+  } catch (e) { _log('[art] dev-server load failed: ' + e); return false; }
+}
+// Fetch one art file, verify integrity, then write to /uo + cache. On a size/hash
+// mismatch it refetches once cache-bypassed; if it STILL fails the file is corrupt at
+// the source and we throw rather than write garbage the game will choke on.
+async function fetchValidateWrite(baseUrl, entry, cache, hash) {
+  let lastBad = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await fetch(baseUrl + entry.name, attempt ? { cache: 'reload' } : undefined);
+    if (!resp.ok) throw new Error('fetch ' + entry.name + ' -> ' + resp.status);
+    const buf = new Uint8Array(await resp.arrayBuffer());
+    lastBad = await checkIntegrity(entry, buf, hash);
+    if (lastBad) { _log('[art] integrity FAIL ' + entry.name + ': ' + lastBad + (attempt ? ' (giving up)' : ' — refetching')); continue; }
+    exports.ClassicUOLoader.WriteUOFile('/uo/' + entry.name, buf);
+    if (cache) { try { await cache.write(entry.name, buf); } catch {} }
+    return;
+  }
+  throw new Error('art ' + entry.name + ' corrupt after refetch: ' + lastBad);
+}
+
+// Incremental top-up after a cache hit: if the /uo-data manifest lists files the cache
+// doesn't have yet (e.g. art added to the server set since the last visit), fetch ONLY
+// those — so adding art never forces a full multi-hundred-MB re-download. No-ops if the
+// dev server isn't serving art or the cache already has everything.
+async function loadMissingFromDevServer(cache, manifest) {
+  if (!cache || !cache.keys || !manifest) return;
+  try {
+    const have = new Set(await cache.keys());
+    const missing = [...manifest.values()].filter(e => !have.has(e.name));
+    if (!missing.length) return;
+    const baseUrl = new URL('/uo-data/', location.href).href;
+    const hash = !!(typeof crypto !== 'undefined' && crypto.subtle);
+    let i = 0;
+    for (const entry of missing) {
+      artStatus('fetching new art… ' + (++i) + '/' + missing.length + ' (' + entry.name + ')');
+      try { await fetchValidateWrite(baseUrl, entry, cache, hash); }
+      catch (e) { _log('[art] ' + e); }
+    }
+  } catch (e) { _log('[art] top-up failed: ' + e); }
 }
 
 // First-run folder picker (webkitdirectory — works in Firefox + Chrome, unlike
@@ -395,13 +491,13 @@ function showArtPicker(cache) {
       try {
         const byName = new Map();
         for (const file of ev.target.files) byName.set((file.name || '').toLowerCase(), file);
-        const missing = UO_FILES.filter(f => !byName.has(f.toLowerCase()));
+        const missing = UO_FILES_REQUIRED.filter(f => !byName.has(f.toLowerCase()));
         if (missing.length) {
-          artStatus('that folder is missing ' + missing.length + ' file(s) (e.g. ' + missing.slice(0, 3).join(', ') + ') — pick your UO root folder.');
+          artStatus('that folder is missing ' + missing.length + ' required file(s) (e.g. ' + missing.slice(0, 3).join(', ') + ') — pick your UO root folder.');
           return;
         }
-        // Required + any optional files the folder actually has (mobiles/items art).
-        const toImport = UO_FILES.concat(UO_FILES_OPTIONAL.filter(f => byName.has(f.toLowerCase())));
+        // Required + any recommended/optional files the folder actually has (body + item art).
+        const toImport = [...new Set(UO_FILES_REQUIRED.concat(UO_FILES_OPTIONAL))].filter(f => byName.has(f.toLowerCase()));
         let i = 0;
         for (const f of toImport) {
           const buf = new Uint8Array(await byName.get(f.toLowerCase()).arrayBuffer());
@@ -410,6 +506,7 @@ function showArtPicker(cache) {
           artStatus('importing ' + (++i) + '/' + toImport.length + ' (' + f + ')…');
         }
         artStatus('done — starting the client…');
+        await validateAndReport(cache, null);   // completeness check (no server manifest to size-verify against)
         ov.remove();
         resolve();
       } catch (e) { artStatus('import failed: ' + ((e && e.message) || e)); reject(e); }
@@ -417,12 +514,67 @@ function showArtPicker(cache) {
   });
 }
 
+// Post-load gate: confirm the loaded set is COMPLETE (every required + recommended file
+// present) and, where the manifest provides sizes, intact. Required problems are
+// surfaced loudly — console + an on-screen banner — because the alternative (what shipped
+// before) is a silent partial load that renders a broken, bodyless world. Downloads are
+// already sha256-verified at write time; this pass additionally catches a cache that was
+// truncated/evicted under storage pressure, and a server manifest missing required files.
+async function validateAndReport(cache, manifest) {
+  const present = new Set(cache && cache.keys ? await cache.keys() : []);
+  const problems = [];
+  for (const n of UO_FILES_REQUIRED) if (!present.has(n)) problems.push({ name: n, level: 'required', why: 'missing' });
+  for (const n of UO_FILES_RECOMMENDED) if (!present.has(n)) problems.push({ name: n, level: 'recommended', why: 'missing' });
+  if (manifest && cache && cache.sizeOf) {
+    for (const [name, entry] of manifest) {
+      if (!present.has(name) || entry.size == null) continue;
+      const sz = await cache.sizeOf(name);
+      if (sz != null && sz !== entry.size) problems.push({ name, level: 'required', why: 'size ' + sz + '≠' + entry.size });
+    }
+  }
+  const req = problems.filter(p => p.level === 'required');
+  const rec = problems.filter(p => p.level === 'recommended');
+  if (!req.length && !rec.length) {
+    _log('[art] ✓ validation OK — ' + present.size + ' files present + size-verified');
+  } else {
+    _log('[art] ⚠ validation — ' + present.size + ' files, ' + req.length + ' REQUIRED problem(s), ' + rec.length + ' recommended missing');
+    for (const p of problems) _log('[art]   ' + (p.level === 'required' ? '✗' : '·') + ' ' + p.name + ': ' + p.why);
+  }
+  if (req.length) showArtBanner(req);
+  return req.length === 0;
+}
+function showArtBanner(req) {
+  try {
+    const names = req.slice(0, 6).map(p => p.name + (p.why !== 'missing' ? ' (' + p.why + ')' : '')).join(', ') +
+      (req.length > 6 ? ', +' + (req.length - 6) + ' more' : '');
+    let el = document.getElementById('art-banner');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'art-banner';
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7a1f1f;color:#fff;' +
+        'font:13px/1.4 system-ui,sans-serif;padding:8px 14px;text-align:center;box-shadow:0 1px 6px rgba(0,0,0,.5)';
+      document.body.appendChild(el);
+    }
+    el.innerHTML = '⚠ Art set incomplete — bodies/world may not render. Missing/corrupt: ' + names +
+      ' &nbsp;<span style="text-decoration:underline;cursor:pointer" onclick="this.parentElement.remove()">dismiss</span>';
+  } catch {}
+}
+
 // Persistent cache (OPFS on https, IndexedDB on plain-HTTP dev) -> /uo-data/ server
-// -> first-run picker. Never crashes on absent art.
+// -> first-run picker. Never crashes on absent art. The manifest (when the dev server
+// provides one) is the integrity contract; every load path validates against it.
 async function loadArt() {
   const cache = await artCache();
-  if (cache && await cache.hasAll()) { await cache.load(); return; }
-  if (await loadFromDevServer(cache)) return;
+  const manifest = await fetchManifest();
+  if (cache && await cache.hasAll()) {
+    await cache.load();
+    await loadMissingFromDevServer(cache, manifest);   // pull any newly-added files
+    await validateAndReport(cache, manifest);          // completeness + integrity gate
+    return;
+  }
+  if (manifest && manifest.size && await loadFromDevServer(cache, manifest)) {
+    await validateAndReport(cache, manifest);
+    return;
+  }
   await showArtPicker(cache);
 }
 await loadArt();
