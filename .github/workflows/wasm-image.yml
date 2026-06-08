@@ -67,6 +67,20 @@ jobs:
       - name: Build WASM bundle
         run: bash build-wasm/dev.sh build
 
+      - name: Verify the GC fuse is compiled into the bundle
+        run: |
+          set -euo pipefail
+          # The GC-wedge fuse lives in libmono-ee-interp.a, overlaid onto the runtime pack
+          # by fetch-statics.sh (STATICS_FUSE_TAG / patches/004-mono-interp-lmf-gc-fuse). If
+          # that overlay ever silently stops applying (STATICS_TAG bump, fetch failure, the
+          # release asset deleted), the client would ship wedge-prone again. Fail loud here.
+          WASM=$(ls build-wasm/loader/bin/Release/net10.0/publish/wwwroot/_framework/dotnet.native.*.wasm | head -1)
+          if ! strings "$WASM" | grep -q 'gc-guard'; then
+            echo "::error::GC fuse missing from $(basename "$WASM") — the libmono-ee-interp.a overlay did not apply. Refusing to ship a wedge-prone client."
+            exit 1
+          fi
+          echo "GC fuse present in $(basename "$WASM") ✓"
+
       - name: Stage bundle for the image
         run: |
           set -euo pipefail
