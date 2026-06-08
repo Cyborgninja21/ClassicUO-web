@@ -1,0 +1,43 @@
+diff --git a/src/mono/mono/mini/interp/interp.c b/src/mono/mono/mini/interp/interp.c
+index d073d8b10..4033c04f9 100644
+--- a/src/mono/mono/mini/interp/interp.c
++++ b/src/mono/mono/mini/interp/interp.c
+@@ -8923,14 +8923,38 @@ interp_mark_frame_no_ref_slots (ThreadContext *context, InterpFrame *frame, gpoi
+ static void
+ interp_mark_no_ref_slots (ThreadContext *context, MonoLMF* lmf)
+ {
++	unsigned long _lmf_iters = 0;
+ 	memset (context->no_ref_slots, 0, (context->stack_pointer - context->stack_start) / (8 * sizeof (gpointer)) + 1);
+ 	while (lmf) {
++		/*
++		 * ClassicUO-web GC fuse (2026-06-08). A corrupt (cyclic) LMF chain makes this walk loop
++		 * forever inside a stop-the-world nursery GC, permanently wedging the single wasm thread
++		 * (the original "hard freeze after ~1000 frames"). Root cause is an upstream Mono wasm
++		 * interp LMF-lifetime bug: the oldest live interp-exit LMF can carry a stale previous_lmf
++		 * into reused C-stack memory that deterministically self-points; the GC walk then never
++		 * terminates. A real LMF chain is at most a few hundred deep, so >64k unambiguously means
++		 * a cycle. Breaking out is SAFE: interp_mark_no_ref_slots only *marks* no-ref slots, so
++		 * stopping early just makes the GC conservatively scan a few more slots (over-pin, never
++		 * under-mark). Throttled telemetry — first trip in full, then a sparse rollup — so a
++		 * recurring fault is a heartbeat, not a console flood, and we can tell whether the
++		 * underlying corruption is still occurring (it is, until the upstream fix lands).
++		 */
++		if (++_lmf_iters > 65536UL) {
++			static unsigned long _gc_lmf_guard_trips = 0;
++			unsigned long t = ++_gc_lmf_guard_trips;
++			if (t == 1 || (t & 0xFFF) == 0)
++				g_printerr ("[gc-guard] interp LMF chain cycle broken — trip #%lu\n", t);
++			break;
++		}
+ 		if ((gsize)lmf->previous_lmf & 2) {
+ 			MonoLMFExt *lmf_ext = (MonoLMFExt*) lmf;
+ 			if (lmf_ext->kind == MONO_LMFEXT_INTERP_EXIT || lmf_ext->kind == MONO_LMFEXT_INTERP_EXIT_WITH_CTX) {
+ 				InterpFrame *frame = (InterpFrame*)lmf_ext->interp_exit_data;
+ 				gpointer *top_limit = NULL;
++				unsigned long _frame_iters = 0;
+ 				while (frame) {
++					if (++_frame_iters > 65536UL)
++						break;   /* defensive: same fuse for a cyclic InterpFrame->parent chain */
+ 					if (frame->imethod) {
+ 						interp_mark_frame_no_ref_slots (context, frame, top_limit);
+ 						top_limit = (gpointer*)frame->stack;

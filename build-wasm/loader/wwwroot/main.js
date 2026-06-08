@@ -444,7 +444,15 @@ try {
   exports.ClassicUOLoader.StartClassicUO(JSON.stringify(settings));
 } catch (e) {
   // emscripten simulate_infinite_loop throws "unwind" to hand the stack to rAF — expected.
-  if (!('' + e).includes('unwind')) _fatal('StartClassicUO', e);
+  if (!('' + e).includes('unwind')) {
+    let d = 'ctor=' + (e && e.constructor && e.constructor.name);
+    try { d += ' | msg=' + e.message; } catch {}
+    try { d += ' | keys=' + Object.getOwnPropertyNames(e).join(','); } catch {}
+    try { d += ' | stack=' + String(e.stack).slice(0, 600); } catch {}
+    try { const g = globalThis.getDotnetRuntime && globalThis.getDotnetRuntime(0); const M = g && g.Module; if (M && M.getExceptionMessage) d += ' | EH=' + M.getExceptionMessage(e).join('::'); } catch (ee) { d += ' | EHerr=' + ee; }
+    _err('[crashdetail] ' + d);
+    _fatal('StartClassicUO', e);
+  }
 }
 
 // Size the FNA backbuffer to the viewport so the canvas fills the page: SDL only listens
@@ -503,7 +511,7 @@ try {
 // /ingest if configured — with the last-known state. Silent wedges become diagnosable.
 function _wdPing() {
   if (!_wd) return;
-  try { _wd.postMessage({ t: 'hb', frame: diag.frame, phase: diag.phase, endpoint: diag.endpoint, build: diag.build_sha, ring: _ring.slice(-15) }); } catch {}
+  try { _wd.postMessage({ t: 'hb', frame: diag.frame, phase: diag.phase, endpoint: diag.endpoint, build: diag.build_sha, hidden: (typeof document!=='undefined'&&document.hidden), vis: (typeof document!=='undefined'?document.visibilityState:'?'), ring: _ring.slice(-15) }); } catch {}
 }
 try {
   const _wdSrc =
@@ -511,11 +519,17 @@ try {
     "onmessage=function(e){var d=e.data;if(d){if(d.t==='hb'){last=Date.now();s=d;fired=false;}else if(d.t==='step'){last=Date.now();step=d.s;fired=false;}}};" +
     "setInterval(function(){var dt=Date.now()-last;" +
     "if(!fired&&dt>4000){fired=true;" +
-    "console.error('[FREEZE] main thread wedged '+dt+'ms — STEP='+step+' — frame '+s.frame+' phase '+s.phase+' (build '+s.build+')\\n--- last log lines ---\\n'+((s.ring||[]).join('\\n')));" +
+    "console.error('[FREEZE] main thread wedged '+dt+'ms — STEP='+step+' — frame '+s.frame+' phase '+s.phase+' hidden='+s.hidden+' vis='+s.vis+' (build '+s.build+')\\n--- last log lines ---\\n'+((s.ring||[]).join('\\n')));" +
     "if(s.endpoint){try{fetch(s.endpoint,{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'freeze',since_ms:dt,frozen_step:step,frozen_frame:s.frame,frozen_phase:s.phase,build_sha:s.build,ring:s.ring||[]})}).catch(function(){});}catch(_){}}}" +
     "},1000);";
   _wd = new Worker(URL.createObjectURL(new Blob([_wdSrc], { type: 'application/javascript' })));
   _wdPing();
+  // Throttle-immune heartbeat. The per-frame _wdPing (in the rAF pump) STOPS when the tab is
+  // backgrounded (browsers pause rAF), which fired FALSE [FREEZE]s every time a test tab lost
+  // focus. A timer still fires on a backgrounded-but-idle thread (clamped to ~1s, well under the
+  // 4s threshold) but CANNOT fire on a truly wedged thread — so [FREEZE] now signals only real
+  // main-thread wedges, not tab throttling.
+  setInterval(() => { try { _wdPing(); } catch {} }, 1000);
 } catch (e) { _log('[diag] freeze watchdog unavailable: ' + e); }
 
 // Drive FNA's frame loop from requestAnimationFrame. RESILIENT: one bad frame (an exception
