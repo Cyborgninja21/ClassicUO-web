@@ -25,7 +25,9 @@ namespace ClassicUO.Network
         private SocketWrapper _socket = null;
         private SocketWrapperType? _socketType;
         // §2.1 mode (a): the configured WSS endpoint to always re-dial in WebSocket mode.
-        private Uri _wsUri;
+        // ClassicUO-web: static so the relay URL survives any NetClient/_socketType reset
+        // (a re-login or a reconnect must always be able to re-dial the wss:// relay).
+        private static Uri _wsUri;
 
 
         public NetClient()
@@ -135,7 +137,12 @@ namespace ClassicUO.Network
             // server's RAW IP, but a browser can only re-open a WebSocket URL — so ignore
             // the relay host and reuse the original WSS URI (the proxy opens a fresh TCP
             // to the game port per WS connection, so this just works).
-            if (_socketType == SocketWrapperType.WebSocket && !isWebsocketAddress && _wsUri != null)
+            // ClassicUO-web: in a browser the ONLY usable transport is the wss:// relay — a raw
+            // TCP socket is impossible. So ANY non-ws address (the 0x8C relay's game IP, OR a
+            // manual re-login whose Settings.IP was overwritten by that relay) must re-dial the
+            // stored relay URL. Keyed on IsBrowser() (not the fragile _socketType, which a reset
+            // can flip back to TcpSocket and strand the client dialing tcp:// forever).
+            if (OperatingSystem.IsBrowser() && !isWebsocketAddress && _wsUri != null)
             {
                 Log.Trace($"WS mode: ignoring relay {ip}:{port}; re-dialing {_wsUri}");
                 SetupSocket(SocketWrapperType.WebSocket);

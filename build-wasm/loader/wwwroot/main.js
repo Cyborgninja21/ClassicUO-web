@@ -431,7 +431,11 @@ await loadArt();
 // `diag_endpoint` (optional) points the beacons at the diag-sidecar /ingest URL.
 let settings = {
   ip: "172.16.2.154", port: 2593,
-  ultimaonlinedirectory: "/uo", clientversion: "7.0.95.0",
+  // clientversion: must be >= the ModernUO shard's clientVerification minimum
+  // (7.0.114.65 as of 2026-06) or the server kicks "bad version" ~20s after world
+  // entry. The reported version only drives the protocol handshake; ClassicUO speaks
+  // the modern protocol fine, and the T2A *content* is the server's expansion, not this.
+  ultimaonlinedirectory: "/uo", clientversion: "7.0.114.65",
   lang: "ENU", encryption: 0, use_verdata: false
 };
 try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
