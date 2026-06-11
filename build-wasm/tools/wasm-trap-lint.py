@@ -20,6 +20,13 @@ trap class this script does not.
 Usage:
   wasm-trap-lint.py [src-dir]            # default: ../../src (the ClassicUO tree)
   wasm-trap-lint.py --strict [src-dir]   # exit 1 if any UNGUARDED crash trap found (CI gate)
+  wasm-trap-lint.py --strict --baseline FILE [src-dir]
+        # ratchet gate: tolerate the findings recorded in FILE (per file+category
+        # counts), exit 1 only on NEW unguarded crash traps. Lets CI gate a tree
+        # with known desktop-only findings without a big-bang cleanup.
+  wasm-trap-lint.py --write-baseline FILE [src-dir]
+        # (re)generate FILE from the current findings (run after fixing traps to
+        # tighten the ratchet; never to absorb a regression).
 """
 import os
 import re
@@ -52,10 +59,21 @@ def is_guarded(lines, i):
     return any("IsBrowser" in lines[j] for j in range(lo, i + 1))
 
 
+def read_opt(args, flag):
+    if flag in args:
+        i = args.index(flag)
+        val = args[i + 1]
+        del args[i:i + 2]
+        return val
+    return None
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     strict = "--strict" in args
     args = [a for a in args if a != "--strict"]
+    baseline_path = read_opt(args, "--baseline")
+    write_baseline_path = read_opt(args, "--write-baseline")
     here = os.path.dirname(os.path.abspath(__file__))
     root = args[0] if args else os.path.normpath(os.path.join(here, "..", "..", "src"))
 
@@ -99,9 +117,45 @@ def main():
     dump("⚠ potential UI-thread hangs (sync-over-async / Thread.Sleep — review)", hangs)
     print(f"\nsummary: {len(unguarded_crash)} unguarded crash, {len(guarded_crash)} guarded, {len(hangs)} hang")
 
-    if strict and unguarded_crash:
-        print("\nSTRICT: unguarded crash traps present — failing.", file=sys.stderr)
-        return 1
+    # Baseline ratchet — keyed on (file, category) with a tolerated count, so line
+    # drift from unrelated edits doesn't churn the file, but ANY new trap (new
+    # file+category, or one more hit in a known pair) fails the gate.
+    def group(items):
+        counts = {}
+        for f in items:
+            counts[(f["file"], f["cat"])] = counts.get((f["file"], f["cat"]), 0) + 1
+        return counts
+
+    if write_baseline_path:
+        with open(write_baseline_path, "w") as fh:
+            fh.write("# wasm-trap-lint ratchet baseline — tolerated UNGUARDED crash findings\n")
+            fh.write("# (file|category|count). Tighten after fixing traps; never absorb a regression.\n")
+            for (path, cat), n in sorted(group(unguarded_crash).items()):
+                fh.write(f"{path}|{cat}|{n}\n")
+        print(f"baseline written: {write_baseline_path} ({len(group(unguarded_crash))} entries)")
+        return 0
+
+    if strict:
+        allowed = {}
+        if baseline_path:
+            for ln in open(baseline_path):
+                ln = ln.strip()
+                if not ln or ln.startswith("#"):
+                    continue
+                path, cat, n = ln.rsplit("|", 2)
+                allowed[(path, cat)] = int(n)
+        new = {k: n for k, n in group(unguarded_crash).items() if n > allowed.get(k, 0)}
+        if new:
+            print("\nSTRICT: NEW unguarded crash traps (not in baseline) — failing.", file=sys.stderr)
+            for (path, cat), n in sorted(new.items()):
+                over = n - allowed.get((path, cat), 0)
+                print(f"  {path} [{cat}]: {n} found, {allowed.get((path, cat), 0)} tolerated (+{over})",
+                      file=sys.stderr)
+            return 1
+        fixed = {k: v for k, v in allowed.items() if group(unguarded_crash).get(k, 0) < v}
+        if fixed:
+            print(f"\nnote: {len(fixed)} baseline entr{'y is' if len(fixed)==1 else 'ies are'} now "
+                  f"over-tolerant — re-run --write-baseline to tighten the ratchet.")
     return 0
 
 

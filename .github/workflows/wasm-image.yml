@@ -41,6 +41,17 @@ jobs:
         with:
           submodules: recursive
 
+      # Ratchet gate for the wasm-AOT trap classes (threadpool reverse-pinvoke,
+      # raw sockets, subprocess, sync-over-async). Fails fast — before the
+      # expensive AOT build — on any NEW unguarded trap; the known desktop-only
+      # findings live in the committed baseline. Tighten with --write-baseline
+      # after fixing traps; never regenerate to absorb a regression.
+      - name: WASM trap lint (ratchet gate)
+        run: >-
+          python3 build-wasm/tools/wasm-trap-lint.py --strict
+          --baseline build-wasm/tools/wasm-trap-baseline.txt
+          src/ClassicUO.Client
+
       - name: Cache toolchain statics
         uses: actions/cache@v4
         with:
