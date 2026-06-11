@@ -414,6 +414,46 @@ async function artCache() {
 // never crashes and the picker still takes over. On success it ALSO caches every
 // file into the persistent store (OPFS or IndexedDB), so the *next* visit loads
 // instantly from cache with no re-download — the same one-time cost the picker pays.
+// Tier split (sprint 4.1): the client BOOTS on the required tier (~40% of the bytes);
+// the recommended tier (the big AnimationFrame*/anim2/anim3/multi set, ~60%) streams in
+// the BACKGROUND after the login screen is up. Late-arriving files are OPFS-cached but
+// only bind at the next page load (ClassicUO's loaders open files at boot), so when the
+// background tier finishes on a first visit we offer a one-click refresh.
+const _RECOMMENDED_SET = new Set(UO_FILES_RECOMMENDED.map(n => n.toLowerCase()));
+function splitTiers(entries) {
+  const priority = [], deferred = [];
+  for (const e of entries) (_RECOMMENDED_SET.has(e.name.toLowerCase()) ? deferred : priority).push(e);
+  return { priority, deferred };
+}
+
+// Parallel fetch pool (sprint 4.2) with byte-accurate progress. Concurrency 3 keeps the
+// transient ArrayBuffer footprint bounded (biggest priority file is ~155 MB); files are
+// ordered small-first so the bar moves immediately.
+async function fetchTier(entries, baseUrl, cache, hash, label) {
+  const totalBytes = entries.reduce((s, e) => s + (e.size || 0), 0);
+  let doneBytes = 0;
+  const fmtMB = (b) => (b / 1048576).toFixed(0);
+  const tick = () => artStatus(label + ' ' + fmtMB(doneBytes) + ' / ' + fmtMB(totalBytes) + ' MB');
+  tick();
+  const queue = [...entries].sort((a, b) => (a.size || 0) - (b.size || 0));
+  let failed = null;
+  async function worker() {
+    for (;;) {
+      const entry = queue.shift();
+      if (!entry || failed) return;
+      let counted = 0;
+      const onBytes = (d) => { doneBytes += d; counted += d; tick(); };
+      const resetBytes = () => { doneBytes -= counted; counted = 0; };
+      try { await fetchValidateWrite(baseUrl, entry, cache, hash, onBytes, resetBytes); }
+      catch (e) { failed = e; return; }
+      // settle to the manifest size so rounding/missing-stream never skews the bar
+      doneBytes += (entry.size || 0) - counted; tick();
+    }
+  }
+  await Promise.all([0, 1, 2].map(worker));
+  if (failed) throw failed;
+}
+
 async function loadFromDevServer(cache, manifest) {
   try {
     const entries = [...(manifest || new Map()).values()];
@@ -422,25 +462,68 @@ async function loadFromDevServer(cache, manifest) {
     // "(one time)" only when there's a persistent cache to write into; without one we
     // don't over-promise — the fetch would repeat each load.
     const once = cache ? ' (one time)' : '';
-    artStatus('downloading art' + once + '…');
     const hash = !!(typeof crypto !== 'undefined' && crypto.subtle);
-    let i = 0;
-    for (const entry of entries) {
-      await fetchValidateWrite(baseUrl, entry, cache, hash);
-      artStatus('downloading art' + once + '… ' + (++i) + '/' + entries.length + ' (' + entry.name + ')');
-    }
+    const { priority, deferred } = splitTiers(entries);
+    await fetchTier(priority, baseUrl, cache, hash, 'downloading art' + once + '…');
+    if (deferred.length) backgroundFetch(deferred, baseUrl, cache, hash);
     return true;
   } catch (e) { _log('[art] dev-server load failed: ' + e); return false; }
+}
+
+// Fire-and-forget background download of the recommended tier (extra animations,
+// multis). Non-fatal on error — the game is already playable; next visit retries via
+// the top-up path. On success we offer a refresh (the running game can't late-bind).
+let _bgArtDone = false;
+function backgroundFetch(entries, baseUrl, cache, hash) {
+  (async () => {
+    try {
+      await fetchTier(entries, baseUrl, cache, hash, 'extra animations (background)…');
+      _bgArtDone = true;
+      artStatus('');
+      _log('[art] background tier complete (' + entries.length + ' files)');
+      showRefreshBanner();
+    } catch (e) { _log('[art] background tier failed (retries next visit): ' + e); artStatus(''); }
+  })();
+}
+function showRefreshBanner() {
+  try {
+    let el = document.getElementById('art-refresh-banner');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'art-refresh-banner';
+      el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99998;background:#1f4d2e;color:#fff;' +
+        'font:13px/1.4 system-ui,sans-serif;padding:8px 14px;text-align:center;box-shadow:0 -1px 6px rgba(0,0,0,.5)';
+      document.body.appendChild(el);
+    }
+    el.innerHTML = '✓ Extra animations downloaded — <span style="text-decoration:underline;cursor:pointer" ' +
+      'onclick="location.reload()">refresh to enable them</span>' +
+      ' &nbsp;<span style="text-decoration:underline;cursor:pointer;opacity:.7" onclick="this.parentElement.remove()">later</span>';
+  } catch {}
 }
 // Fetch one art file, verify integrity, then write to /uo + cache. On a size/hash
 // mismatch it refetches once cache-bypassed; if it STILL fails the file is corrupt at
 // the source and we throw rather than write garbage the game will choke on.
-async function fetchValidateWrite(baseUrl, entry, cache, hash) {
+async function fetchValidateWrite(baseUrl, entry, cache, hash, onBytes, resetBytes) {
   let lastBad = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt && resetBytes) resetBytes();   // don't double-count refetched bytes
     const resp = await fetch(baseUrl + entry.name, attempt ? { cache: 'reload' } : undefined);
     if (!resp.ok) throw new Error('fetch ' + entry.name + ' -> ' + resp.status);
-    const buf = new Uint8Array(await resp.arrayBuffer());
+    let buf;
+    if (onBytes && resp.body) {
+      // stream so the progress bar moves DURING big files, not only between them
+      const reader = resp.body.getReader();
+      const chunks = []; let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value); got += value.byteLength; onBytes(value.byteLength);
+      }
+      buf = new Uint8Array(got);
+      let off = 0; for (const c of chunks) { buf.set(c, off); off += c.byteLength; }
+    } else {
+      buf = new Uint8Array(await resp.arrayBuffer());
+      if (onBytes) onBytes(buf.byteLength);
+    }
     lastBad = await checkIntegrity(entry, buf, hash);
     if (lastBad) { _log('[art] integrity FAIL ' + entry.name + ': ' + lastBad + (attempt ? ' (giving up)' : ' — refetching')); continue; }
     exports.ClassicUOLoader.WriteUOFile('/uo/' + entry.name, buf);
@@ -462,12 +545,14 @@ async function loadMissingFromDevServer(cache, manifest) {
     if (!missing.length) return;
     const baseUrl = new URL('/uo-data/', location.href).href;
     const hash = !!(typeof crypto !== 'undefined' && crypto.subtle);
-    let i = 0;
-    for (const entry of missing) {
-      artStatus('fetching new art… ' + (++i) + '/' + missing.length + ' (' + entry.name + ')');
-      try { await fetchValidateWrite(baseUrl, entry, cache, hash); }
+    // Same tier rule as the first visit: only required-tier gaps block boot (e.g. a
+    // tab closed mid-first-download must not re-block on the big anim set).
+    const { priority, deferred } = splitTiers(missing);
+    if (priority.length) {
+      try { await fetchTier(priority, baseUrl, cache, hash, 'fetching new art…'); }
       catch (e) { _log('[art] ' + e); }
     }
+    if (deferred.length) backgroundFetch(deferred, baseUrl, cache, hash);
   } catch (e) { _log('[art] top-up failed: ' + e); }
 }
 
@@ -562,20 +647,34 @@ function showArtBanner(req) {
 // Persistent cache (OPFS on https, IndexedDB on plain-HTTP dev) -> /uo-data/ server
 // -> first-run picker. Never crashes on absent art. The manifest (when the dev server
 // provides one) is the integrity contract; every load path validates against it.
+// Ask the browser to PROTECT the (1.5 GB) art cache from storage-pressure eviction.
+// Chromium grants silently on engaged origins; Firefox may prompt. Best-effort.
+async function persistStorage() {
+  try {
+    if (!(navigator.storage && navigator.storage.persist)) return;
+    if (await navigator.storage.persisted()) { _log('[art] storage already persistent'); return; }
+    const ok = await navigator.storage.persist();
+    _log('[art] storage persist ' + (ok ? 'GRANTED — cache protected from eviction' : 'denied (cache may be evicted under pressure)'));
+  } catch {}
+}
+
 async function loadArt() {
   const cache = await artCache();
   const manifest = await fetchManifest();
   if (cache && await cache.hasAll()) {
     await cache.load();
+    persistStorage();
     await loadMissingFromDevServer(cache, manifest);   // pull any newly-added files
     await validateAndReport(cache, manifest);          // completeness + integrity gate
     return;
   }
   if (manifest && manifest.size && await loadFromDevServer(cache, manifest)) {
+    persistStorage();
     await validateAndReport(cache, manifest);
     return;
   }
   await showArtPicker(cache);
+  persistStorage();
 }
 await loadArt();
 // Default settings render the login screen. An optional (gitignored) ./uo-config.json
