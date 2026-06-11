@@ -592,6 +592,21 @@ let settings = {
 };
 try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
 if (settings.diag_endpoint) { diag.endpoint = settings.diag_endpoint; delete settings.diag_endpoint; }
+// Decode the login background in the BROWSER (canvas) and hand RGBA to managed —
+// both FNA3D's stb_image callbacks and ImageSharp's PNG decoder trap under WASM AOT.
+try {
+  const bgResp = await fetch('game-background.png');
+  if (bgResp.ok) {
+    const bmp = await createImageBitmap(await bgResp.blob());
+    const cv = new OffscreenCanvas(bmp.width, bmp.height);
+    const cx = cv.getContext('2d');
+    cx.drawImage(bmp, 0, 0);
+    const px = cx.getImageData(0, 0, bmp.width, bmp.height).data;
+    exports.ClassicUOLoader.SetLoginBackground(new Uint8Array(px.buffer.slice(0)), bmp.width, bmp.height);
+    console.log('[boot] login background decoded (' + bmp.width + 'x' + bmp.height + ')');
+  }
+} catch (e) { console.log('[boot] login background decode skipped: ' + e); }
+
 console.log('[boot] UO files written; starting ClassicUO (ip=' + settings.ip + ')');
 // A/B lever: ?chunkmesh=1 enables the GPU chunk-mesh renderer for this session
 // (off by default in-browser — no rebuild needed for dense-scene perf comparisons).

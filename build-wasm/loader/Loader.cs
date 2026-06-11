@@ -162,6 +162,15 @@ public static partial class ClassicUOLoader
         catch (Exception e) { Console.WriteLine("[loader] InjectText failed: " + e.Message); }
     }
 
+    // Pre-boot login-background pixels (RGBA), decoded by the BROWSER in main.js —
+    // both FNA3D's stb_image path and ImageSharp's PNG decoder trap under WASM AOT.
+    [JSExport]
+    public static void SetLoginBackground(byte[] rgbaPixels, int width, int height)
+    {
+        try { ClassicUO.WebEntry.SetLoginBackground(rgbaPixels, width, height); }
+        catch (Exception e) { Console.WriteLine("[loader] SetLoginBackground failed: " + e.Message); }
+    }
+
     // A/B lever: enable the GPU chunk-mesh renderer for this session (off by default
     // in-browser). main.js calls this when the page URL carries ?chunkmesh=1.
     [JSExport]
