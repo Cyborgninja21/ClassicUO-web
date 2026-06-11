@@ -431,8 +431,19 @@ namespace ClassicUO.Game.UI.Gumps
             {
                 if (_logoTexture2D == null || _logoTexture2D.IsDisposed)
                 {
-                    using var stream = new MemoryStream(Loader.GetCuoLogo().ToArray());
-                    _logoTexture2D = Texture2D.FromStream(Client.Game.GraphicsDevice, stream);
+                    if (OperatingSystem.IsBrowser())
+                    {
+                        // WASM AOT: Texture2D.FromStream (FNA3D stb_image reverse-pinvoke)
+                        // hard-traps — opening Options would kill the runtime for a logo.
+                        // Cosmetic: a 1x1 transparent placeholder instead.
+                        _logoTexture2D = new Texture2D(Client.Game.GraphicsDevice, 1, 1);
+                        _logoTexture2D.SetData(new[] { Microsoft.Xna.Framework.Color.Transparent });
+                    }
+                    else
+                    {
+                        using var stream = new MemoryStream(Loader.GetCuoLogo().ToArray());
+                        _logoTexture2D = Texture2D.FromStream(Client.Game.GraphicsDevice, stream);
+                    }
                 }
 
                 return _logoTexture2D;

@@ -46,6 +46,12 @@ TRAPS = [
     (r"\bTcpClient\b|\bTcpListener\b|\bUdpClient\b",     "raw-socket",            "crash"),
     (r"\bClientWebSocket\b",                             "clientwebsocket-async", "crash"),
     (r"\bProcess\.Start\b|System\.Diagnostics\.Process", "subprocess",           "crash"),
+    # Image DECODE traps (both proven 2026-06-11): Texture2D.FromStream rides
+    # FNA3D_Image_Load's stb_image reverse-pinvoke read callbacks; ImageSharp's
+    # PNG decoder raw-traps with an uncatchable "function signature mismatch".
+    # Browser path: decode in JS (createImageBitmap) -> RGBA -> SetData.
+    (r"\bTexture2D\.FromStream\b",                      "image-decode",          "crash"),
+    (r"\bImage\.Load\b|\bImage\.LoadAsync\b",          "image-decode",          "crash"),
     (r"\bThread\.Sleep\b",                               "blocks-ui-thread",      "hang"),
     (r"\.GetAwaiter\(\)\.GetResult\(\)",                 "sync-over-async",       "hang"),
     (r"\.Wait\(\s*\)",                                   "sync-over-async",       "hang"),

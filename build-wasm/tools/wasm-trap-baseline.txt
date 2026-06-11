@@ -2,7 +2,9 @@
 # (file|category|count). Tighten after fixing traps; never absorb a regression.
 Game/Scenes/GameScene.cs|raw-socket|1
 Game/Scenes/LoginScene.cs|raw-socket|1
+Game/UI/Gumps/WorldMapGump.cs|image-decode|2
 Game/UltimaLive.cs|threadpool|1
+GameController.cs|image-decode|1
 Network/NetClient.cs|raw-socket|1
 Network/Socket/SocketWrapper.cs|raw-socket|1
 Network/Socket/TcpSocketWrapper.cs|raw-socket|3
