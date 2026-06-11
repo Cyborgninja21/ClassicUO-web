@@ -205,6 +205,50 @@ namespace ClassicUO.Assets
                 _musicData.Add(64, ("selimsbar", true));
                 _musicData.Add(65, ("serpentislecombat_u7", true));
                 _musicData.Add(66, ("valoriaships", true));
+                // 67+ — present in modern installs' Music/Digital/Config.txt but absent
+                // from this fallback, which silently muted the LOGIN screen on 7.x
+                // clients: AudioManager.LoginMusicIndex is 78 (LoginLoop) for >= CV_7000.
+                // (The browser client can't ship the nested Config.txt — flat art set —
+                // so the fallback must cover the full range. Values transcribed from a
+                // 7.0.114 install's Config.txt.)
+                _musicData.Add(67, ("thewanderer", false));
+                _musicData.Add(68, ("castle", false));
+                _musicData.Add(69, ("festival", false));
+                _musicData.Add(70, ("honor", false));
+                _musicData.Add(71, ("medieval", false));
+                _musicData.Add(72, ("battleonstones", false));
+                _musicData.Add(73, ("docktown", false));
+                _musicData.Add(74, ("gargoylequeen", false));
+                _musicData.Add(75, ("genericcombat", false));
+                _musicData.Add(76, ("holycity", false));
+                _musicData.Add(77, ("humanlevel", false));
+                _musicData.Add(78, ("loginloop", true));
+                _musicData.Add(79, ("northernforestbattleonstones", false));
+                _musicData.Add(80, ("primevallich", false));
+                _musicData.Add(81, ("queenpalace", false));
+                _musicData.Add(82, ("royalcity", false));
+                _musicData.Add(83, ("slasherveil", false));
+                _musicData.Add(84, ("stygianabyss", false));
+                _musicData.Add(85, ("stygiandragon", false));
+                _musicData.Add(86, ("void", false));
+                _musicData.Add(87, ("codexshrine", false));
+                _musicData.Add(88, ("anvilstrikeinminoc", false));
+                _musicData.Add(89, ("askaranlullaby", false));
+                _musicData.Add(90, ("blackthornsmarch", false));
+                _musicData.Add(91, ("dupresnightintrinsic", false));
+                _musicData.Add(92, ("fayaxionandthesix", false));
+                _musicData.Add(93, ("flightofthenexus", false));
+                _musicData.Add(94, ("galehavenjaunt", false));
+                _musicData.Add(95, ("jhelomtoarms", false));
+                _musicData.Add(96, ("midnightinyew", false));
+                _musicData.Add(97, ("moonglowsonata", false));
+                _musicData.Add(98, ("newmaginciamarch", false));
+                _musicData.Add(99, ("nujelmwaltz", false));
+                _musicData.Add(100, ("sherryssong", false));
+                _musicData.Add(101, ("starlightinbritain", false));
+                _musicData.Add(102, ("thevespermist", false));
+                _musicData.Add(103, ("townlife", true));
+                _musicData.Add(104, ("dungeonoutpost", true));
             }
         }
 
