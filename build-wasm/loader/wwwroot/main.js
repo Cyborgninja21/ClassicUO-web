@@ -1019,6 +1019,18 @@ try {
 // than dying. Only SUSTAINED failure trips the circuit breaker and stops us, so a transient
 // glitch can't kill the client and a recurring one can't flood the log. TickFrame() returns
 // false on a clean game exit.
+// Perf telemetry (sprint 6.2): every 5 minutes in-game, ship the tick-time
+// distribution as a beacon — Grafana trends p95 per session and alerts on
+// regressions against the Sprint-2 baseline (p95 ~2 ms, budget 16.7 ms).
+setInterval(() => {
+  try {
+    if (diag.phase !== 'rendering' || !window.__cuoTickStats) return;
+    const t = window.__cuoTickStats();
+    if (t && t.n) beacon('perf', { tick_mean: +t.mean.toFixed(2), tick_p50: +t.p50.toFixed(2),
+                                   tick_p95: +t.p95.toFixed(2), tick_max: +t.max.toFixed(2), n: t.n });
+  } catch {}
+}, 300000);
+
 console.log('[boot] starting rAF frame pump');
 let _consecErrors = 0;
 const _MAX_CONSEC_ERRORS = 30;   // ~0.5s of unbroken failure before we give up

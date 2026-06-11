@@ -101,6 +101,19 @@ jobs:
           cp -r "$PUB" build-wasm/deploy/wwwroot
           echo "Bundle staged:"; ls -1 build-wasm/deploy/wwwroot | head
 
+      # Crash symbolication (sprint 6.1): bake the wasm function map into the
+      # bundle. Beacons carry raw wasm-function indices; the diag sidecar fetches
+      # this map (same-origin with build-info.json, so it always matches the
+      # served build) and resolves them to names in Loki. ~1-2 MB of text.
+      - name: Emit the wasm function map
+        run: |
+          W=$(ls build-wasm/deploy/wwwroot/_framework/dotnet.native.*.wasm | head -1)
+          build-wasm/statics/emsdk/emsdk/bin/wasm-opt --print-function-map --quiet "$W" \
+            --enable-threads --enable-bulk-memory --enable-exception-handling --enable-multivalue \
+            --enable-mutable-globals --enable-reference-types --enable-sign-ext --enable-simd \
+            > build-wasm/deploy/wwwroot/_framework/dotnet.native.symbols.txt
+          wc -l build-wasm/deploy/wwwroot/_framework/dotnet.native.symbols.txt
+
       - name: Log in to ghcr.io
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
