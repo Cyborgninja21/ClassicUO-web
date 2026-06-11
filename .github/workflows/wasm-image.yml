@@ -22,11 +22,10 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: cyborgninja21/classicuo-web
-  STATICS_TAG: toolchain-26933625837
-  # GC-wedge fuse: fetch-statics.sh overlays a fuse-patched libmono-ee-interp.a from this
-  # release onto the base pack (the pinned upstream pack predates patches/004). Bump to
-  # invalidate the statics cache when the fuse lib changes.
-  STATICS_FUSE_TAG: gcfuse-interp-004
+  # Single self-contained toolchain tag — the pack already contains the patch-004
+  # GC-fuse runtime lib (sprint 6.3 de-overlay). The fuse-verify build step below
+  # still gates every build, so a fuse-less pack can never ship silently.
+  STATICS_TAG: toolchain-26933625837-fused004
 
 jobs:
   build:
@@ -56,7 +55,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build-wasm/statics
-          key: ${{ env.STATICS_TAG }}-${{ env.STATICS_FUSE_TAG }}
+          key: ${{ env.STATICS_TAG }}
 
       - name: Cache .NET SDK + wasm-tools
         uses: actions/cache@v4
@@ -82,8 +81,9 @@ jobs:
         run: |
           set -euo pipefail
           # The GC-wedge fuse lives in libmono-ee-interp.a, overlaid onto the runtime pack
-          # by fetch-statics.sh (STATICS_FUSE_TAG / patches/004-mono-interp-lmf-gc-fuse). If
-          # that overlay ever silently stops applying (STATICS_TAG bump, fetch failure, the
+          # by the statics pack (patches/004-mono-interp-lmf-gc-fuse, baked into the
+          # release). If a STATICS_TAG bump ever ships a fuse-less pack (upstream rebuild
+          # without the patch, mirror mistake, the
           # release asset deleted), the client would ship wedge-prone again. Fail loud here.
           WASM=$(ls build-wasm/loader/bin/Release/net10.0/publish/wwwroot/_framework/dotnet.native.*.wasm | head -1)
           if ! strings "$WASM" | grep -q 'gc-guard'; then
@@ -101,17 +101,17 @@ jobs:
           cp -r "$PUB" build-wasm/deploy/wwwroot
           echo "Bundle staged:"; ls -1 build-wasm/deploy/wwwroot | head
 
-      # Crash symbolication (sprint 6.1): bake the wasm function map into the
-      # bundle. Beacons carry raw wasm-function indices; the diag sidecar fetches
-      # this map (same-origin with build-info.json, so it always matches the
-      # served build) and resolves them to names in Loki. ~1-2 MB of text.
-      - name: Emit the wasm function map
+      # Crash symbolication (sprint 6.1): ship the linker's function map next to
+      # the bundle. WasmEmitSymbolMap (csproj) makes the SDK emit index:name even
+      # in Release — the publish pipeline strips wasm name sections, so this side
+      # file is the only reliable source (wasm-opt on the published binary yields
+      # index:index). The diag sidecar fetches it same-origin with build-info.json
+      # and resolves beacon wasm_frames to names in Loki.
+      - name: Ship the wasm function map
         run: |
-          W=$(ls build-wasm/deploy/wwwroot/_framework/dotnet.native.*.wasm | head -1)
-          build-wasm/statics/emsdk/emsdk/bin/wasm-opt --print-function-map --quiet "$W" \
-            --enable-threads --enable-bulk-memory --enable-exception-handling --enable-multivalue \
-            --enable-mutable-globals --enable-reference-types --enable-sign-ext --enable-simd \
-            > build-wasm/deploy/wwwroot/_framework/dotnet.native.symbols.txt
+          SYM=build-wasm/loader/obj/Release/net10.0/wasm/for-publish/dotnet.native.js.symbols
+          test -s "$SYM"   # hard-fail: a missing map means WasmEmitSymbolMap regressed
+          cp "$SYM" build-wasm/deploy/wwwroot/_framework/dotnet.native.symbols.txt
           wc -l build-wasm/deploy/wwwroot/_framework/dotnet.native.symbols.txt
 
       - name: Log in to ghcr.io
