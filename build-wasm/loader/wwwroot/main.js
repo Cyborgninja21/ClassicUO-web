@@ -593,6 +593,12 @@ let settings = {
 try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
 if (settings.diag_endpoint) { diag.endpoint = settings.diag_endpoint; delete settings.diag_endpoint; }
 console.log('[boot] UO files written; starting ClassicUO (ip=' + settings.ip + ')');
+// A/B lever: ?chunkmesh=1 enables the GPU chunk-mesh renderer for this session
+// (off by default in-browser — no rebuild needed for dense-scene perf comparisons).
+if (new URLSearchParams(location.search).get('chunkmesh') === '1') {
+  try { exports.ClassicUOLoader.SetChunkMeshEnabled(true); console.log('[boot] chunk-mesh renderer ENABLED via ?chunkmesh=1'); }
+  catch (e) { console.log('[boot] SetChunkMeshEnabled failed: ' + e); }
+}
 setPhase('starting');
 try {
   // Returns after init now — the main loop is JS-driven (single-threaded WASM AOT can't
@@ -706,10 +712,25 @@ try {
 console.log('[boot] starting rAF frame pump');
 let _consecErrors = 0;
 const _MAX_CONSEC_ERRORS = 30;   // ~0.5s of unbroken failure before we give up
+// Per-tick wall-time stats (perf baseline instrument — sprint plan 2b). Ring of the
+// last 600 tick durations; window.__cuoTickStats() returns {n, mean, p50, p95, max}.
+const _tickDur = new Float32Array(600);
+let _tickDurN = 0, _tickDurI = 0;
+window.__cuoTickStats = function () {
+  const n = Math.min(_tickDurN, _tickDur.length);
+  if (!n) return { n: 0 };
+  const a = Array.from(_tickDur.slice(0, n)).sort((x, y) => x - y);
+  const q = (f) => a[Math.min(n - 1, Math.floor(f * n))];
+  return { n, mean: a.reduce((s, v) => s + v, 0) / n, p50: q(0.5), p95: q(0.95), max: a[n - 1] };
+};
 function _pump() {
   let alive = true;
   try {
+    const _t0 = performance.now();
     alive = exports.ClassicUOLoader.TickFrame();
+    _tickDur[_tickDurI] = performance.now() - _t0;
+    _tickDurI = (_tickDurI + 1) % _tickDur.length;
+    _tickDurN++;
     _consecErrors = 0;           // a clean frame resets the breaker
   } catch (e) {
     if (('' + e).includes('unwind')) { requestAnimationFrame(_pump); return; }

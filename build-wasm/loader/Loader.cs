@@ -161,4 +161,13 @@ public static partial class ClassicUOLoader
         try { ClassicUO.WebEntry.InjectText(text); }
         catch (Exception e) { Console.WriteLine("[loader] InjectText failed: " + e.Message); }
     }
+
+    // A/B lever: enable the GPU chunk-mesh renderer for this session (off by default
+    // in-browser). main.js calls this when the page URL carries ?chunkmesh=1.
+    [JSExport]
+    public static void SetChunkMeshEnabled(bool enabled)
+    {
+        try { ClassicUO.WebEntry.SetChunkMeshEnabled(enabled); }
+        catch (Exception e) { Console.WriteLine("[loader] SetChunkMeshEnabled failed: " + e.Message); }
+    }
 }

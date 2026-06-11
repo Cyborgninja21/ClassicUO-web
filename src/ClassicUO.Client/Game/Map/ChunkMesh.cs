@@ -102,8 +102,13 @@ namespace ClassicUO.Game.Map
 
     internal sealed class ChunkMesh
     {
-        // WASM: the GPU chunk-mesh path renders nothing under FNA3D-on-WebGL; fall back to
-        // per-tile drawing. Desktop keeps the fast mesh path.
+        // WASM: per-tile fallback by default. The original "renders nothing on WebGL"
+        // (2026-06-06) no longer reproduces — re-tested 2026-06-11 under the current
+        // runtime: the mesh path builds, uploads, draws, and is pixel-identical to the
+        // per-tile path. But it also showed NO per-tick win at a sparse outdoor scene
+        // (~1.2ms/tick either way, headless swiftshader), so the proven fallback stays
+        // until a dense-scene A/B shows a win. Opt in without a rebuild via
+        // ?chunkmesh=1 on the page URL (WebEntry.SetChunkMeshEnabled).
         public static bool DisableChunkMesh = OperatingSystem.IsBrowser();
 
         public readonly MeshLayer Land = new();

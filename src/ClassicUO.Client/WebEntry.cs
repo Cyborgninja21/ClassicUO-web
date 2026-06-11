@@ -48,5 +48,13 @@ namespace ClassicUO
         public static void InjectMouseMotion() => Client.Game?.InjectMouseMotion();
         public static void InjectKey(int keycode, int mod, bool down) => Client.Game?.InjectKey(keycode, mod, down);
         public static void InjectText(string text) => Client.Game?.InjectText(text);
+
+        // A/B lever for the GPU chunk-mesh renderer (off by default in-browser — see
+        // ChunkMesh.DisableChunkMesh). The loader calls this from main.js when the page
+        // URL carries ?chunkmesh=1, so dense-scene perf comparisons need no rebuild.
+        public static void SetChunkMeshEnabled(bool enabled)
+        {
+            Game.Map.ChunkMesh.DisableChunkMesh = !enabled;
+        }
     }
 }
