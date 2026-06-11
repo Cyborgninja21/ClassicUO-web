@@ -49,6 +49,27 @@ namespace ClassicUO
         public static void InjectKey(int keycode, int mod, bool down) => Client.Game?.InjectKey(keycode, mod, down);
         public static void InjectText(string text) => Client.Game?.InjectText(text);
 
+        // Login-background pixel hand-off: main.js decodes the served game-background.png
+        // (createImageBitmap — the browser is the PNG decoder; both FNA3D and ImageSharp
+        // decode paths trap under WASM AOT) and pushes RGBA here pre-boot; GameController
+        // consumes it once in LoadContent.
+        private static byte[] _loginBgPixels;
+        private static int _loginBgW, _loginBgH;
+
+        public static void SetLoginBackground(byte[] rgbaPixels, int width, int height)
+        {
+            _loginBgPixels = rgbaPixels;
+            _loginBgW = width;
+            _loginBgH = height;
+        }
+
+        public static (byte[] pixels, int width, int height) TakeLoginBackground()
+        {
+            var r = (_loginBgPixels, _loginBgW, _loginBgH);
+            _loginBgPixels = null;   // one-shot — free the copy after the texture is built
+            return r;
+        }
+
         // A/B lever for the GPU chunk-mesh renderer (off by default in-browser — see
         // ChunkMesh.DisableChunkMesh). The loader calls this from main.js when the page
         // URL carries ?chunkmesh=1, so dense-scene perf comparisons need no rebuild.

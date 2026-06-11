@@ -9,5 +9,7 @@
 *.zip
 /build-wasm/*.png
 *.png
+# ...but shipped page assets are real sources (negation must follow the blanket ignore)
+!loader/wwwroot/*.png
 /.uo-test-data/
 /.run/

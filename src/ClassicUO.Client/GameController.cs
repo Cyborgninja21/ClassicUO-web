@@ -131,22 +131,30 @@ namespace ClassicUO
 
             if (OperatingSystem.IsBrowser())
             {
-                // WASM single-threaded AOT: FNA3D_Image_Load decodes PNGs via native->managed
-                // read callbacks (stb_image), which can't be wired through the reverse-pinvoke
-                // thunks here (function signature mismatch). The login background is cosmetic, so
-                // use a 1x1 solid texture. UO gump/art rendering uses ClassicUO's own file readers
-                // (not FNA3D image decode), so the login UI + world render fine. PNG decode
-                // (background/options logo/world-map import) is a known browser limitation.
-                // Size matters: RenderTargets.Draw tiles this across the whole window via
-                // DrawTiled(_background.Bounds). A 1x1 source tiles ~307k times (frozen
-                // first frame), so use a 512x512 solid page — a handful of tiles at any
-                // resolution. Opaque black fill (the window is also Cleared to black).
-                const int bgSize = 512;
-                var solid = new Texture2D(GraphicsDevice, bgSize, bgSize);
-                var px = new Microsoft.Xna.Framework.Color[bgSize * bgSize];
-                System.Array.Fill(px, Microsoft.Xna.Framework.Color.Black);
-                solid.SetData(px);
-                _renderTargets.InitializeBackground(solid);
+                // WASM single-threaded AOT: FNA3D_Image_Load (Texture2D.FromStream) traps on
+                // the stb_image reverse-pinvoke callbacks, and ImageSharp's PNG *decoder*
+                // raw-traps too (function signature mismatch — proven 2026-06-11). So the
+                // browser decodes for us: main.js createImageBitmap()s the served
+                // game-background.png pre-boot and pushes the RGBA pixels through the
+                // SetLoginBackground JSExport (the proven byte[] hand-off pattern).
+                // Fallback: a solid page if the pixels never arrived (cosmetic).
+                Texture2D bg;
+                var (bgPixels, bgW, bgH) = WebEntry.TakeLoginBackground();
+                if (bgPixels != null && bgW > 0 && bgH > 0)
+                {
+                    bg = new Texture2D(GraphicsDevice, bgW, bgH);
+                    bg.SetData(bgPixels);   // RGBA bytes == SurfaceFormat.Color layout
+                }
+                else
+                {
+                    // Solid page, 512x512 — a 1x1 source would tile ~307k times per frame.
+                    const int bgSize = 512;
+                    bg = new Texture2D(GraphicsDevice, bgSize, bgSize);
+                    var px = new Microsoft.Xna.Framework.Color[bgSize * bgSize];
+                    System.Array.Fill(px, Microsoft.Xna.Framework.Color.Black);
+                    bg.SetData(px);
+                }
+                _renderTargets.InitializeBackground(bg);
             }
             else
             {
