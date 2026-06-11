@@ -28,6 +28,13 @@ namespace ClassicUO.Assets
 
         public override void Load()
         {
+            // Music first: it's mp3 files + an index->name map (Config.txt or the
+            // hardcoded fallback) and does NOT depend on the sound-effect file.
+            // The browser client deliberately ships no sound UOP (wasm heap budget —
+            // effects lazy-fetch as per-id PCM), and the early "no sound files"
+            // return below used to silently kill music with it.
+            LoadMusicData();
+
             string path = FileManager.GetUOFilePath("soundLegacyMUL.uop");
 
             if (FileManager.IsUOPInstallation && File.Exists(path))
@@ -108,7 +115,11 @@ namespace ClassicUO.Assets
                 }
             }
 
-            path = FileManager.GetUOFilePath(FileManager.Version >= ClientVersion.CV_4011C ?  @"Music/Digital/Config.txt" : @"Music/Config.txt");
+        }
+
+        private void LoadMusicData()
+        {
+            string path = FileManager.GetUOFilePath(FileManager.Version >= ClientVersion.CV_4011C ?  @"Music/Digital/Config.txt" : @"Music/Config.txt");
 
             if (File.Exists(path))
             {
