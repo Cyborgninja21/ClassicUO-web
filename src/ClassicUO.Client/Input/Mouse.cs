@@ -111,8 +111,22 @@ namespace ClassicUO.Input
 
         public static bool MouseInWindow { get; set; }
 
+        // Browser TOUCH input: a finger has no SDL-pollable cursor (the emscripten
+        // event handlers are dead under AOT), so JS injects the touch position here
+        // and Update() uses it while a touch sequence is active. Cleared the moment
+        // a real mouse event arrives, so mouse+touch hybrids switch seamlessly.
+        public static bool UseInjectedPosition;
+        public static Point InjectedPosition;
+
         public static void Update()
         {
+            if (System.OperatingSystem.IsBrowser() && UseInjectedPosition)
+            {
+                Position = InjectedPosition;
+                IsDragging = LButtonPressed || RButtonPressed || MButtonPressed;
+                return;
+            }
+
             if (!MouseInWindow)
             {
                 SDL.SDL_GetGlobalMouseState(out float x, out float y);

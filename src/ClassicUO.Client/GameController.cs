@@ -672,6 +672,21 @@ namespace ClassicUO
             HandleSdlEvent(IntPtr.Zero, &ev);
         }
 
+        // Touch input (browser): JS feeds the finger position; Mouse.Update consumes
+        // it instead of the SDL poll while active (see Mouse.UseInjectedPosition).
+        public void InjectMousePosition(int x, int y)
+        {
+            Mouse.MouseInWindow = true;
+            Mouse.UseInjectedPosition = true;
+            Mouse.InjectedPosition.X = x;
+            Mouse.InjectedPosition.Y = y;
+        }
+
+        public void SetTouchPointerActive(bool active)
+        {
+            Mouse.UseInjectedPosition = active;
+        }
+
         public unsafe void InjectMouseWheel(int dy)
         {
             SDL_Event ev = default;

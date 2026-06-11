@@ -215,6 +215,89 @@ setModuleImports('uo-ws', {
   wsSend: (data) => { try { if (_ws && _ws.readyState === 1) _ws.send(data); } catch (e) { _fatal('wsSend', e); } },
   wsClose: () => { try { _ws && _ws.close(); } catch {} _ws = null; },
 });
+
+// ── JS-interop audio (module "uo-audio", driven by WasmAudioBridge) ──────────────
+// The browser does the audio work: sound-effect PCM (16-bit mono) decodes ONCE per
+// id into a cached WebAudio AudioBuffer; music streams as mp3 via an <audio>
+// element from /uo-data/music/. FNA's streamed playback hangs the single WASM
+// thread, so this is the audio twin of the WS / PNG-decode inversions.
+let _ac = null;                 // AudioContext — lazy; browsers gate on a user gesture
+const _audioBuffers = new Map(); // sound id -> AudioBuffer
+const _livePlays = new Set();    // active effect source nodes (for stopAll)
+let _musicEl = null;            // HTMLAudioElement for the current track
+let _musicVol = 1.0;
+let _playCount = 0;             // diagnostics
+window.__cuoAudioStats = () => ({ buffers: _audioBuffers.size, plays: _playCount,
+  ctx: _ac ? _ac.state : 'none', music: _musicEl ? (_musicEl.paused ? 'paused' : 'playing') : 'none',
+  musicSrc: _musicEl ? _musicEl.src : null, musicErr: _musicEl && _musicEl.error ? _musicEl.error.code : null });
+function _audioCtx() {
+  if (!_ac) {
+    try { _ac = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch (e) { _log('[audio] AudioContext unavailable: ' + e); return null; }
+  }
+  return _ac;
+}
+// Autoplay policy: a suspended context resumes only inside a user gesture.
+// Hook ONE listener set; harmless if the context was never suspended.
+for (const evName of ['pointerdown', 'keydown', 'touchstart']) {
+  window.addEventListener(evName, () => {
+    if (_ac && _ac.state === 'suspended') _ac.resume().catch(() => {});
+    if (_musicEl && _musicEl.paused && _musicEl.dataset.wantsPlay === '1')
+      _musicEl.play().catch(() => {});
+  }, { passive: true });
+}
+setModuleImports('uo-audio', {
+  audioRegister: (id, pcm, frequency) => {
+    try {
+      const ac = _audioCtx();
+      if (!ac) return;
+      const n = pcm.byteLength >> 1;
+      const buf = ac.createBuffer(1, n, frequency);
+      const ch = buf.getChannelData(0);
+      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+      for (let i = 0; i < n; i++) ch[i] = view.getInt16(i << 1, true) / 32768;
+      _audioBuffers.set(id, buf);
+    } catch (e) { _log('[audio] register ' + id + ' failed: ' + e); }
+  },
+  audioPlay: (id, volume) => {
+    try {
+      const ac = _audioCtx();
+      const buf = _audioBuffers.get(id);
+      if (!ac || !buf || ac.state !== 'running') return;
+      const src = ac.createBufferSource();
+      const gain = ac.createGain();
+      gain.gain.value = volume;
+      src.buffer = buf;
+      src.connect(gain).connect(ac.destination);
+      _livePlays.add(src);
+      src.onended = () => _livePlays.delete(src);
+      src.start();
+      _playCount++;
+    } catch (e) { _log('[audio] play ' + id + ' failed: ' + e); }
+  },
+  audioMusic: (name, volume, loop) => {
+    try {
+      const src = 'uo-data/music/' + String(name).toLowerCase() + '.mp3';
+      if (!_musicEl) { _musicEl = new Audio(); _musicEl.preload = 'auto'; }
+      _musicVol = volume;
+      const want = new URL(src, location.href).href;
+      if (_musicEl.src !== want) _musicEl.src = src;
+      _musicEl.loop = !!loop;
+      _musicEl.volume = Math.max(0, Math.min(1, volume));
+      _musicEl.dataset.wantsPlay = '1';
+      _musicEl.play().catch(() => { /* autoplay-gated — the gesture hook retries */ });
+    } catch (e) { _log('[audio] music ' + name + ' failed: ' + e); }
+  },
+  audioMusicStop: () => {
+    try { if (_musicEl) { _musicEl.dataset.wantsPlay = '0'; _musicEl.pause(); _musicEl.removeAttribute('src'); _musicEl.load(); } } catch {}
+  },
+  audioMusicVolume: (volume) => {
+    try { _musicVol = volume; if (_musicEl) _musicEl.volume = Math.max(0, Math.min(1, volume)); } catch {}
+  },
+  audioStopAll: () => {
+    try { for (const src of _livePlays) { try { src.stop(); } catch {} } _livePlays.clear(); } catch {}
+  },
+});
 exports.ClassicUOLoader.Init();
 exports.ClassicUOLoader.MkUODir();
 
@@ -239,6 +322,7 @@ const UO_FILES_OPTIONAL = [
   "AnimationFrame1.uop", "AnimationFrame2.uop", "AnimationFrame3.uop", "AnimationFrame4.uop",
   "anim.mul", "anim.idx", "anim2.mul", "anim2.idx", "anim3.mul", "anim3.idx",
   "multi.mul", "multi.idx", "Multimap.rle", "verdata.mul",
+  "soundLegacyMUL.uop", "sound.mul", "soundidx.mul",
 ];
 
 // Tiered art contract for completeness validation. UO_FILES (the base world set) plus
@@ -252,6 +336,7 @@ const UO_FILES_REQUIRED = UO_FILES.concat(["anim.mul", "anim.idx"]);
 const UO_FILES_RECOMMENDED = [
   "AnimationFrame1.uop", "AnimationFrame2.uop", "AnimationFrame3.uop", "AnimationFrame4.uop",
   "anim2.mul", "anim2.idx", "anim3.mul", "anim3.idx", "multi.mul", "multi.idx", "Multimap.rle",
+  "soundLegacyMUL.uop",   // sound effects (WebAudio bridge) — game is playable silent
 ];
 
 // --- Art integrity. The manifest may carry {name, size, sha256} per file (see
@@ -757,6 +842,94 @@ try {
   // dragging works (the cursor itself follows via Mouse.Update's position poll).
   _canvas.addEventListener('pointermove', () => { try { exports.ClassicUOLoader.InjectMouseMotion(); } catch {} });
   _canvas.addEventListener('contextmenu', e => e.preventDefault());   // right-click goes to the game, not the browser menu
+
+  // ── Touch input (sprint 5.3) ────────────────────────────────────────────────
+  // A finger has no SDL-pollable cursor, so JS owns the whole touch gesture and
+  // feeds position via InjectMousePosition (Mouse.Update consumes it while a touch
+  // sequence is active). Mapping:
+  //   tap                → left click   (two fast taps = double-click, ClassicUO's
+  //                                      own click timing detects it)
+  //   move while held    → WALK: right-button hold toward the finger
+  //   stationary ≥550 ms → DRAG: left-button hold (pick up items / move gumps)
+  //   second finger tap  → right click (close gumps etc.)
+  // Mouse events clear the injected position, so hybrids switch seamlessly.
+  {
+    const WALK_MOVE_PX = 14, DRAG_HOLD_MS = 550, TAP_MAX_MS = 300;
+    let t = null;   // active primary-touch state
+    const pos = (e) => { const r = _canvas.getBoundingClientRect(); return [Math.round(e.clientX - r.left), Math.round(e.clientY - r.top)]; };
+    const send = (fn, ...a) => { try { exports.ClassicUOLoader[fn](...a); } catch {} };
+    const setPos = (e) => { const [x, y] = pos(e); send('InjectMousePosition', x, y); send('InjectMouseMotion'); };
+    _canvas.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'touch') { send('SetTouchPointerActive', false); return; }
+      e.preventDefault();
+      if (t) {   // second finger while one is active → right click
+        if (t.mode === 'walk') { send('InjectMouseButton', 3, false); }
+        if (t.mode === 'drag') { send('InjectMouseButton', 1, false); }
+        t.mode = 'cancelled';
+        send('InjectMouseButton', 3, true); send('InjectMouseButton', 3, false);
+        return;
+      }
+      setPos(e);
+      t = { id: e.pointerId, t0: performance.now(), mode: 'pending',
+            holdTimer: setTimeout(() => {
+              if (t && t.mode === 'pending') { t.mode = 'drag'; send('InjectMouseButton', 1, true); }
+            }, DRAG_HOLD_MS),
+            x0: e.clientX, y0: e.clientY };
+      try { _canvas.setPointerCapture(e.pointerId); } catch {}
+    }, { passive: false });
+    _canvas.addEventListener('pointermove', e => {
+      if (e.pointerType !== 'touch' || !t || e.pointerId !== t.id || t.mode === 'cancelled') return;
+      e.preventDefault();
+      setPos(e);
+      if (t.mode === 'pending' &&
+          Math.hypot(e.clientX - t.x0, e.clientY - t.y0) > WALK_MOVE_PX) {
+        clearTimeout(t.holdTimer);
+        t.mode = 'walk';
+        send('InjectMouseButton', 3, true);   // hold right = walk toward finger
+      }
+    }, { passive: false });
+    const endTouch = e => {
+      if (e.pointerType !== 'touch' || !t || e.pointerId !== t.id) return;
+      e.preventDefault();
+      clearTimeout(t.holdTimer);
+      setPos(e);
+      if (t.mode === 'walk') send('InjectMouseButton', 3, false);
+      else if (t.mode === 'drag') send('InjectMouseButton', 1, false);
+      else if (t.mode === 'pending' && performance.now() - t.t0 <= TAP_MAX_MS + DRAG_HOLD_MS) {
+        send('InjectMouseButton', 1, true); send('InjectMouseButton', 1, false);
+      }
+      t = null;
+      // keep the injected position one frame so the click lands, then hand back to SDL
+      setTimeout(() => { if (!t) send('SetTouchPointerActive', false); }, 50);
+    };
+    _canvas.addEventListener('pointerup', endTouch, { passive: false });
+    _canvas.addEventListener('pointercancel', endTouch, { passive: false });
+
+    // Virtual keyboard for chat on touch devices: a small ⌨ button focuses a hidden
+    // input; characters forward through InjectText, Enter/Backspace through InjectKey.
+    if (matchMedia('(pointer: coarse)').matches) {
+      const kb = document.createElement('button');
+      kb.textContent = '⌨';
+      kb.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:99997;width:46px;height:46px;' +
+        'border-radius:50%;border:none;background:#3b6ea5;color:#fff;font-size:22px;opacity:.75';
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.autocapitalize = 'off'; inp.autocomplete = 'off'; inp.spellcheck = false;
+      inp.style.cssText = 'position:fixed;bottom:-100px;left:0;width:10px;height:10px;opacity:0';
+      kb.addEventListener('click', e => { e.preventDefault(); inp.focus(); });
+      inp.addEventListener('input', () => {
+        if (inp.value) { try { exports.ClassicUOLoader.InjectText(inp.value); } catch {} inp.value = ''; }
+      });
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === 'Backspace') {
+          const code = e.key === 'Enter' ? 13 : 8;
+          try { exports.ClassicUOLoader.InjectKey(code, 0, true); exports.ClassicUOLoader.InjectKey(code, 0, false); } catch {}
+          e.preventDefault();
+        }
+      });
+      document.body.appendChild(kb);
+      document.body.appendChild(inp);
+    }
+  }
   _canvas.addEventListener('wheel', e => { try { exports.ClassicUOLoader.InjectMouseWheel(e.deltaY < 0 ? 1 : -1); } catch {} e.preventDefault(); }, { passive: false });
 
   // Keyboard: SDL's emscripten key callbacks are dead under AOT too, so JS feeds keys in.
