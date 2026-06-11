@@ -56,6 +56,11 @@
     <WasmNativeStrip>false</WasmNativeStrip>
 
     <EmccExtraLDFlags>-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3 -sWASMFS -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294901760 -sMALLOC=mimalloc</EmccExtraLDFlags>
+    <!-- Crash symbolication (sprint 6.1): emit the function map (index:name) as a
+         BUILD ARTIFACT even in Release — the publish pipeline strips wasm names, so
+         this side file is the only reliable source. CI ships it next to the bundle
+         and the diag sidecar resolves beacon wasm_frames against it. -->
+    <WasmEmitSymbolMap>true</WasmEmitSymbolMap>
     <EmccEnvironment>web</EmccEnvironment>
     <WebAssemblyEnableStreamingResponse>true</WebAssemblyEnableStreamingResponse>
 
