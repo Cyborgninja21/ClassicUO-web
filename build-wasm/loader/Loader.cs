@@ -35,7 +35,6 @@ public static partial class ClassicUOLoader
         // Wire the audio seam to the "uo-audio" JS module (WebAudio effects + an
         // HTMLAudioElement for mp3 music) — FNA's streamed playback hangs the single
         // thread, so the browser does the audio work (see WasmAudioBridge).
-        ClassicUO.Game.Managers.WasmAudioBridge.RegisterEffect = AudioRegister;
         ClassicUO.Game.Managers.WasmAudioBridge.PlayEffect = AudioPlay;
         ClassicUO.Game.Managers.WasmAudioBridge.PlayMusic = AudioMusic;
         ClassicUO.Game.Managers.WasmAudioBridge.StopMusic = AudioMusicStop;
@@ -52,10 +51,8 @@ public static partial class ClassicUOLoader
     [JSImport("wsClose", "uo-ws")]
     internal static partial void WsClose();
 
-    // --- JS-interop audio ("uo-audio" module in main.js). PCM crosses once per
-    // sound id; replays are id+volume only. Music is name-only (JS streams the mp3). ---
-    [JSImport("audioRegister", "uo-audio")]
-    internal static partial void AudioRegister(int id, byte[] pcm16Mono, int frequency);
+    // --- JS-interop audio ("uo-audio" module in main.js). Effects cross as
+    // (id, volume) only — JS lazy-fetches the PCM. Music is name-only. ---
     [JSImport("audioPlay", "uo-audio")]
     internal static partial void AudioPlay(int id, float volume);
     [JSImport("audioMusic", "uo-audio")]

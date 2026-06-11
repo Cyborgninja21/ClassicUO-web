@@ -246,24 +246,40 @@ for (const evName of ['pointerdown', 'keydown', 'touchstart']) {
       _musicEl.play().catch(() => {});
   }, { passive: true });
 }
-setModuleImports('uo-audio', {
-  audioRegister: (id, pcm, frequency) => {
+// Lazy PCM fetch: each effect streams as a tiny raw file (16-bit mono 22050 Hz,
+// extracted server-side from the sound UOP) on FIRST play and caches as a decoded
+// AudioBuffer. The 161 MB sound UOP must NEVER enter MEMFS — every MEMFS byte is
+// wasm-heap, and it pushed the heap past Firefox's growth ceiling (the 2026-06-11
+// live "index out of bounds" crash).
+const _audioFetching = new Set();
+function _fetchEffect(id) {
+  if (_audioFetching.has(id)) return;
+  _audioFetching.add(id);
+  (async () => {
     try {
+      const resp = await fetch('uo-data/sounds/' + id + '.pcm');
+      if (!resp.ok) { _audioBuffers.set(id, null); return; }   // absent — never retry
+      const pcm = new Uint8Array(await resp.arrayBuffer());
       const ac = _audioCtx();
       if (!ac) return;
       const n = pcm.byteLength >> 1;
-      const buf = ac.createBuffer(1, n, frequency);
+      const buf = ac.createBuffer(1, n, 22050);
       const ch = buf.getChannelData(0);
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+      const view = new DataView(pcm.buffer);
       for (let i = 0; i < n; i++) ch[i] = view.getInt16(i << 1, true) / 32768;
       _audioBuffers.set(id, buf);
-    } catch (e) { _log('[audio] register ' + id + ' failed: ' + e); }
-  },
+    } catch (e) { _log('[audio] fetch ' + id + ' failed: ' + e); }
+    finally { _audioFetching.delete(id); }
+  })();
+}
+setModuleImports('uo-audio', {
   audioPlay: (id, volume) => {
     try {
-      const ac = _audioCtx();
       const buf = _audioBuffers.get(id);
-      if (!ac || !buf || ac.state !== 'running') return;
+      if (buf === undefined) { _fetchEffect(id); return; }   // first use — plays next time (<200ms later typically)
+      if (buf === null) return;                              // known-absent
+      const ac = _audioCtx();
+      if (!ac || ac.state !== 'running') return;
       const src = ac.createBufferSource();
       const gain = ac.createGain();
       gain.gain.value = volume;
@@ -322,7 +338,6 @@ const UO_FILES_OPTIONAL = [
   "AnimationFrame1.uop", "AnimationFrame2.uop", "AnimationFrame3.uop", "AnimationFrame4.uop",
   "anim.mul", "anim.idx", "anim2.mul", "anim2.idx", "anim3.mul", "anim3.idx",
   "multi.mul", "multi.idx", "Multimap.rle", "verdata.mul",
-  "soundLegacyMUL.uop", "sound.mul", "soundidx.mul",
 ];
 
 // Tiered art contract for completeness validation. UO_FILES (the base world set) plus
@@ -336,7 +351,6 @@ const UO_FILES_REQUIRED = UO_FILES.concat(["anim.mul", "anim.idx"]);
 const UO_FILES_RECOMMENDED = [
   "AnimationFrame1.uop", "AnimationFrame2.uop", "AnimationFrame3.uop", "AnimationFrame4.uop",
   "anim2.mul", "anim2.idx", "anim3.mul", "anim3.idx", "multi.mul", "multi.idx", "Multimap.rle",
-  "soundLegacyMUL.uop",   // sound effects (WebAudio bridge) — game is playable silent
 ];
 
 // --- Art integrity. The manifest may carry {name, size, sha256} per file (see
@@ -391,7 +405,7 @@ async function opfsWrite(dir, f, buf) {
   await w.write(buf); await w.close();
 }
 
-async function loadFromOpfs() {
+async function loadFromOpfs(manifest) {
   artStatus('loading cached art…');
   const dir = await opfsArtDir(false);
   // Load everything cached (required + any optional the player provided).
@@ -399,6 +413,15 @@ async function loadFromOpfs() {
   for await (const [name, handle] of dir.entries()) if (handle.kind === 'file') names.push(name);
   let i = 0;
   for (const f of names) {
+    // A file the SERVER manifest no longer lists must not enter MEMFS (every
+    // MEMFS byte is wasm-heap — a stale 161 MB soundLegacyMUL.uop pushed the
+    // heap past Firefox's growth ceiling). Server-managed caches prune it;
+    // picker-supplied caches (no manifest) load everything as before.
+    if (manifest && manifest.size && !manifest.has(f)) {
+      _log('[art] pruning cached ' + f + ' (no longer in the server manifest)');
+      try { await dir.removeEntry(f); } catch {}
+      continue;
+    }
     const buf = new Uint8Array(await (await (await dir.getFileHandle(f)).getFile()).arrayBuffer());
     exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
     artStatus('loading cached art… ' + (++i) + '/' + names.length);
@@ -461,7 +484,7 @@ async function artCache() {
     _artCache = {
       kind: 'opfs',
       hasAll: opfsHasAllArt,
-      load: loadFromOpfs,
+      load: (manifest) => loadFromOpfs(manifest),
       keys: opfsArtKeys,
       sizeOf: opfsSizeOf,
       write: async (f, buf) => { const d = await opfsArtDir(true); await opfsWrite(d, f, buf); },
@@ -747,7 +770,7 @@ async function loadArt() {
   const cache = await artCache();
   const manifest = await fetchManifest();
   if (cache && await cache.hasAll()) {
-    await cache.load();
+    await cache.load(manifest);
     persistStorage();
     await loadMissingFromDevServer(cache, manifest);   // pull any newly-added files
     await validateAndReport(cache, manifest);          // completeness + integrity gate
