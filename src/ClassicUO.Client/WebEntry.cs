@@ -46,6 +46,8 @@ namespace ClassicUO
         public static void InjectMouseButton(int sdlButton, bool down) => Client.Game?.InjectMouseButton(sdlButton, down);
         public static void InjectMouseWheel(int dy) => Client.Game?.InjectMouseWheel(dy);
         public static void InjectMouseMotion() => Client.Game?.InjectMouseMotion();
+        public static void InjectMousePosition(int x, int y) => Client.Game?.InjectMousePosition(x, y);
+        public static void SetTouchPointerActive(bool active) => Client.Game?.SetTouchPointerActive(active);
         public static void InjectKey(int keycode, int mod, bool down) => Client.Game?.InjectKey(keycode, mod, down);
         public static void InjectText(string text) => Client.Game?.InjectText(text);
 

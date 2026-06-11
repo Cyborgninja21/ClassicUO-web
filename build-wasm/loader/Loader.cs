@@ -31,6 +31,16 @@ public static partial class ClassicUOLoader
         ClassicUO.Network.Socket.WasmWebSocketBridge.Open = WsOpen;
         ClassicUO.Network.Socket.WasmWebSocketBridge.Send = (data, _) => WsSend(data);
         ClassicUO.Network.Socket.WasmWebSocketBridge.Close = WsClose;
+
+        // Wire the audio seam to the "uo-audio" JS module (WebAudio effects + an
+        // HTMLAudioElement for mp3 music) — FNA's streamed playback hangs the single
+        // thread, so the browser does the audio work (see WasmAudioBridge).
+        ClassicUO.Game.Managers.WasmAudioBridge.RegisterEffect = AudioRegister;
+        ClassicUO.Game.Managers.WasmAudioBridge.PlayEffect = AudioPlay;
+        ClassicUO.Game.Managers.WasmAudioBridge.PlayMusic = AudioMusic;
+        ClassicUO.Game.Managers.WasmAudioBridge.StopMusic = AudioMusicStop;
+        ClassicUO.Game.Managers.WasmAudioBridge.SetMusicVolume = AudioMusicVolume;
+        ClassicUO.Game.Managers.WasmAudioBridge.StopAllEffects = AudioStopAll;
     }
 
     // --- JS-interop WebSocket. The "uo-ws" module (main.js, setModuleImports) owns a
@@ -41,6 +51,21 @@ public static partial class ClassicUOLoader
     internal static partial void WsSend(byte[] data);
     [JSImport("wsClose", "uo-ws")]
     internal static partial void WsClose();
+
+    // --- JS-interop audio ("uo-audio" module in main.js). PCM crosses once per
+    // sound id; replays are id+volume only. Music is name-only (JS streams the mp3). ---
+    [JSImport("audioRegister", "uo-audio")]
+    internal static partial void AudioRegister(int id, byte[] pcm16Mono, int frequency);
+    [JSImport("audioPlay", "uo-audio")]
+    internal static partial void AudioPlay(int id, float volume);
+    [JSImport("audioMusic", "uo-audio")]
+    internal static partial void AudioMusic(string name, float volume, bool loop);
+    [JSImport("audioMusicStop", "uo-audio")]
+    internal static partial void AudioMusicStop();
+    [JSImport("audioMusicVolume", "uo-audio")]
+    internal static partial void AudioMusicVolume(float volume);
+    [JSImport("audioStopAll", "uo-audio")]
+    internal static partial void AudioStopAll();
 
     [JSExport]
     public static void WsOnOpen() => ClassicUO.Network.Socket.WasmWebSocketBridge.OnOpen?.Invoke();
@@ -139,6 +164,21 @@ public static partial class ClassicUOLoader
 
     // Fired on every canvas pointermove. Drives the SDL_EVENT_MOUSE_MOTION path so gump/world
     // dragging works (the cursor follows via polling, but drags need the motion event).
+    // Touch input: JS feeds the finger position (no SDL-pollable cursor for touch).
+    [JSExport]
+    public static void InjectMousePosition(int x, int y)
+    {
+        try { ClassicUO.WebEntry.InjectMousePosition(x, y); }
+        catch (Exception e) { Console.WriteLine("[loader] InjectMousePosition failed: " + e.Message); }
+    }
+
+    [JSExport]
+    public static void SetTouchPointerActive(bool active)
+    {
+        try { ClassicUO.WebEntry.SetTouchPointerActive(active); }
+        catch (Exception e) { Console.WriteLine("[loader] SetTouchPointerActive failed: " + e.Message); }
+    }
+
     [JSExport]
     public static void InjectMouseMotion()
     {

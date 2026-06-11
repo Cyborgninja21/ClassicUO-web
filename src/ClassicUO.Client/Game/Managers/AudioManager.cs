@@ -78,7 +78,9 @@ namespace ClassicUO.Game.Managers
         {
             Profile currentProfile = ProfileManager.CurrentProfile;
 
-            if (!_canReproduceAudio || currentProfile == null)
+            // In-browser _canReproduceAudio stays false (the FNA path is unusable) but
+            // the WebAudio bridge takes over below — don't gate on it there.
+            if ((!_canReproduceAudio && !OperatingSystem.IsBrowser()) || currentProfile == null)
             {
                 return;
             }
@@ -107,6 +109,14 @@ namespace ClassicUO.Game.Managers
                 volume = 0;
             }
 
+            if (OperatingSystem.IsBrowser())
+            {
+                // WebAudio bridge — FNA streamed playback hangs the single thread (see
+                // Initialize). Volume is final here; JS plays the cached AudioBuffer.
+                WasmAudioBridge.Effect(index, volume);
+                return;
+            }
+
             UOSound sound = (UOSound) Client.Game.UO.Sounds.GetSound(index);
 
             if (sound != null && sound.Play(Time.Ticks, volume))
@@ -121,7 +131,7 @@ namespace ClassicUO.Game.Managers
 
         public void PlaySoundWithDistance(World world, int index, int x, int y)
         {
-            if (!_canReproduceAudio || !world.InGame)
+            if ((!_canReproduceAudio && !OperatingSystem.IsBrowser()) || !world.InGame)
             {
                 return;
             }
@@ -155,6 +165,14 @@ namespace ClassicUO.Game.Managers
                 volume = 0;
             }
 
+            if (OperatingSystem.IsBrowser())
+            {
+                // Distance attenuation applied here (desktop applies it inside
+                // Sound.Play via volumeFactor) — the bridge gets the net volume.
+                WasmAudioBridge.Effect(index, volume - distanceFactor);
+                return;
+            }
+
             UOSound sound = (UOSound)Client.Game.UO.Sounds.GetSound(index);
 
             if (sound != null && sound.Play(Time.Ticks, volume, distanceFactor))
@@ -169,7 +187,7 @@ namespace ClassicUO.Game.Managers
 
         public void PlayMusic(int music, bool iswarmode = false, bool is_login = false)
         {
-            if (!_canReproduceAudio)
+            if (!_canReproduceAudio && !OperatingSystem.IsBrowser())
             {
                 return;
             }
@@ -210,6 +228,28 @@ namespace ClassicUO.Game.Managers
                 return;
             }
 
+            if (OperatingSystem.IsBrowser())
+            {
+                // JS streams /uo-data/music/<name>.mp3 via an HTMLAudioElement (loop +
+                // volume handled there) — MP3Sharp->DynamicSoundEffectInstance streaming
+                // is the exact reverse-pinvoke shape that hangs the runtime.
+                if (WasmAudioBridge.PlayMusic != null &&
+                    Client.Game.UO.FileManager.Sounds.TryGetMusicData(music, out string musicName, out bool musicLoops) &&
+                    !string.IsNullOrEmpty(musicName))
+                {
+                    if (volume <= 0f)
+                    {
+                        WasmAudioBridge.StopMusic?.Invoke();
+                    }
+                    else
+                    {
+                        WasmAudioBridge.PlayMusic(musicName, volume, musicLoops);
+                    }
+                }
+
+                return;
+            }
+
             Sound m = Client.Game.UO.Sounds.GetMusic(music);
 
             if (m == null && _currentMusic[0] != null)
@@ -230,6 +270,18 @@ namespace ClassicUO.Game.Managers
 
         public void UpdateCurrentMusicVolume(bool isLogin = false)
         {
+            if (OperatingSystem.IsBrowser())
+            {
+                float browserVolume = isLogin
+                    ? (Settings.GlobalSettings.LoginMusic ? Settings.GlobalSettings.LoginMusicVolume / SOUND_DELTA : 0)
+                    : (ProfileManager.CurrentProfile == null || !ProfileManager.CurrentProfile.EnableMusic
+                        ? 0
+                        : ProfileManager.CurrentProfile.MusicVolume / SOUND_DELTA);
+
+                WasmAudioBridge.SetMusicVolume?.Invoke(Math.Clamp(browserVolume, 0f, 1f));
+                return;
+            }
+
             if (!_canReproduceAudio)
             {
                 return;
@@ -287,6 +339,11 @@ namespace ClassicUO.Game.Managers
 
         public void StopMusic()
         {
+            if (OperatingSystem.IsBrowser())
+            {
+                WasmAudioBridge.StopMusic?.Invoke();
+            }
+
             for (int i = 0; i < 2; i++)
             {
                 if (_currentMusic[i] != null)
@@ -305,6 +362,11 @@ namespace ClassicUO.Game.Managers
 
         public void StopSounds()
         {
+            if (OperatingSystem.IsBrowser())
+            {
+                WasmAudioBridge.StopAllEffects?.Invoke();
+            }
+
             LinkedListNode<UOSound> first = _currentSounds.First;
 
             while (first != null)
