@@ -262,7 +262,11 @@ async function boot(msg) {
   } catch (e) { log('[boot] login background skipped: ' + e); }
 
   let settings = { ip: '172.16.2.154', port: 2593, ultimaonlinedirectory: '/uo',
-    clientversion: '7.0.114.65', lang: 'ENU', encryption: 0, use_verdata: false };
+    clientversion: '7.0.114.65', lang: 'ENU', encryption: 0, use_verdata: false,
+    // Worker mode: SDL's hardware-cursor path maps to a CSS cursor via canvas
+    // toDataURL — dead in a worker (the gauntlet vanished; user-reported). With
+    // this off, ClassicUO DRAWS the cursor in-engine, fully worker-compatible.
+    run_mouse_in_separate_thread: false };
   try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
   if (settings.diag_endpoint) { diagEndpoint = settings.diag_endpoint; delete settings.diag_endpoint; }
 
