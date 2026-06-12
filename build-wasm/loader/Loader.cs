@@ -82,11 +82,33 @@ public static partial class ClassicUOLoader
     [JSExport]
     public static void MkUODir() => Directory.CreateDirectory("/uo");
 
+    // --- Sprint 11: JS-memory-backed /uo ---
+    // wasmfs js_file backend: file bytes live in JS-heap typed arrays
+    // outside the wasm32 address space; read/write stay fully synchronous.
+    // Persistence is unchanged (the JS-side OPFS art cache feeds WriteUOFile
+    // exactly as before) — only the resident copy moves off-heap.
+    [DllImport("Emscripten", EntryPoint = "mount_uo_jsstore")]
+    private static extern int mount_uo_jsstore();
+
+    [JSExport]
+    public static bool MountUOStore()
+    {
+        try
+        {
+            var rc = mount_uo_jsstore();
+            Console.WriteLine($"[ClassicUOLoader] /uo js-store mount rc={rc}");
+            return rc == 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ClassicUOLoader] /uo js-store mount threw: {ex.Message}");
+            return false;
+        }
+    }
+
     [JSExport]
     public static void WriteUOFile(string path, byte[] data) => File.WriteAllBytes(path, data);
 
-    // settingsJson is ClassicUO's settings.json verbatim (ip may be a ws://… URL to
-    // dial the WSS proxy; add username/password/autologin to skip the login UI).
     [JSExport]
     public static void StartClassicUO(string settingsJson)
     {

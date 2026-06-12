@@ -315,7 +315,12 @@ setModuleImports('uo-audio', {
   },
 });
 exports.ClassicUOLoader.Init();
-exports.ClassicUOLoader.MkUODir();
+// Sprint 11: js-memory /uo store — art bytes leave the wasm heap (the
+// js_file wasmfs backend is synchronous, so classic mode benefits too).
+let uoJsStore = false;
+try { uoJsStore = !!exports.ClassicUOLoader.MountUOStore(); } catch (e) { console.warn('[art] js-store mount threw:', e); }
+if (!uoJsStore) exports.ClassicUOLoader.MkUODir();
+console.log('[art] /uo store: ' + (uoJsStore ? 'js-memory (off-heap)' : 'MEMFS (heap)'));
 
 // ===========================================================================
 // UO art onboarding (plan §W5). UO art is EA-owned and NOT shipped — the player
