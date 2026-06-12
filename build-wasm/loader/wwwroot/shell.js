@@ -12,6 +12,7 @@ export function boot() {
   document.body.appendChild(statusEl);
   const log = console.log.bind(console);
 
+  canvas.style.cursor = 'none';   // the engine draws the gauntlet; hide the OS arrow
   const off = canvas.transferControlToOffscreen();
   const worker = new Worker('./engine-worker.js', { type: 'module' });
   const send = (m, tr) => worker.postMessage(m, tr || []);
