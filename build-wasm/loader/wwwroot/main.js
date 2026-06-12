@@ -323,14 +323,8 @@ exports.ClassicUOLoader.MkUODir();
 // across sessions), so the folder picker only shows the first time. Dev keeps the
 // /uo-data/ server fallback so the harness e2e needs no picker. Nothing is uploaded.
 // ===========================================================================
-const UO_FILES = [
-  "AnimationSequence.uop", "Body.def", "Bodyconv.def", "Cliloc.enu", "MainMisc.uop",
-  "MultiCollection.uop", "Prof.txt", "Professn.enu", "Skills.idx", "Sound.def", "art.def",
-  "artLegacyMUL.uop", "fonts.mul", "gump.def", "gumpartLegacyMUL.uop", "hues.mul", "light.mul",
-  "lightidx.mul", "map0LegacyMUL.uop", "mobtypes.txt", "radarcol.mul", "skills.mul", "speech.mul",
-  "staidx0.mul", "statics0.mul", "string_dictionary.uop", "texidx.mul", "texmaps.mul", "tileart.uop",
-  "tiledata.mul", "unifont.mul", "unifont1.mul", "unifont2.mul", "unifont3.mul",
-];
+// Shared with engine-worker.js — single source of truth (sprint 9).
+import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest } from './art-contract.js';
 // Optional — loaded if the player's folder/cache has them (mobiles/items render with
 // these; the world still loads without them, just no animations). Not required by the
 // picker so partial installs work; the render loop skips anything it can't draw.
@@ -346,46 +340,12 @@ const UO_FILES_OPTIONAL = [
 // AnimationFrame*.uop UOP frames). They were previously mis-classified OPTIONAL, which
 // is exactly how a bodyless world shipped silently. A missing/corrupt REQUIRED file is
 // now surfaced loudly (console + on-screen banner), never a silent partial load.
-const UO_FILES_REQUIRED = UO_FILES.concat(["anim.mul", "anim.idx"]);
-// Render MORE bodies/items, but the client is usable without them — warn, don't fail.
-const UO_FILES_RECOMMENDED = [
-  "AnimationFrame1.uop", "AnimationFrame2.uop", "AnimationFrame3.uop", "AnimationFrame4.uop",
-  "anim2.mul", "anim2.idx", "anim3.mul", "anim3.idx", "multi.mul", "multi.idx", "Multimap.rle",
-];
 
 // --- Art integrity. The manifest may carry {name, size, sha256} per file (see
 // .run/gen-art-manifest.py). We verify size on every load and sha256 on download in a
 // secure context (crypto.subtle needs https/localhost; raw-IP HTTP dev degrades to
 // size-only). A truncated/corrupt download is rejected and refetched rather than
 // written, so corruption never reaches the game's virtual filesystem. ---
-async function sha256Hex(buf) {
-  if (!(typeof crypto !== 'undefined' && crypto.subtle)) return null;
-  const d = await crypto.subtle.digest('SHA-256', buf);
-  let s = ''; for (const b of new Uint8Array(d)) s += b.toString(16).padStart(2, '0');
-  return s;
-}
-// null if OK, else a human-readable reason. hash=false skips the (large) digest.
-async function checkIntegrity(entry, buf, hash) {
-  if (entry && entry.size != null && buf.length !== entry.size) return 'size ' + buf.length + '≠' + entry.size;
-  if (hash && entry && entry.sha256) { const h = await sha256Hex(buf); if (h && h !== entry.sha256) return 'sha256 mismatch'; }
-  return null;
-}
-// Accept legacy ["name", ...] or integrity [{name,size,sha256}, ...]; -> Map name->entry.
-function parseManifest(json) {
-  const m = new Map();
-  for (const e of json || []) {
-    const entry = typeof e === 'string' ? { name: e } : e;
-    if (entry && entry.name && entry.name !== 'manifest.json') m.set(entry.name, entry);
-  }
-  return m;
-}
-async function fetchManifest() {
-  try {
-    const r = await fetch('/uo-data/manifest.json', { cache: 'no-store' });
-    if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return null;
-    return parseManifest(await r.json());
-  } catch { return null; }
-}
 
 function artStatus(msg) { const el = document.getElementById('art-status'); if (el) el.textContent = msg; _log('[art] ' + msg); }
 
