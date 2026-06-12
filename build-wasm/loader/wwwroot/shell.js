@@ -106,6 +106,7 @@ export function boot() {
       // no server art: worker mode v1 doesn't carry the folder picker — reload classic
       const u = new URL(location.href); u.searchParams.delete('worker'); location.href = u.href;
     }
+    else if (m.t === 'ready') resize();   // initial resize raced the boot — exports exist now
     else if (m.t === 'fatal') { log('[fatal] ' + m.msg); statusEl.textContent = '⚠ ' + m.msg; }
   };
   worker.onerror = (e) => { log('[worker error] ' + e.message); statusEl.textContent = '⚠ worker: ' + e.message; };
@@ -125,18 +126,25 @@ export function boot() {
 
   // ── Input capture → forward (mirrors main.js's mappings) ─────────────────
   const sdlBtn = (b) => (b === 1 ? 2 : b === 2 ? 3 : b === 3 ? 4 : b === 4 ? 5 : 1);
+  // In worker mode the engine CANNOT poll a cursor (SDL's DOM listeners don't
+  // exist in the worker) — the injected position is the ONLY position source and
+  // must stay active permanently. Never call SetTouchPointerActive(false) here
+  // (that flips the engine back to the SDL poll, which reads 0,0 — clicks land
+  // in the top-left corner; user-reported on first validation).
+  const sendPos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    inj('InjectMousePosition', Math.round(e.clientX - r.left), Math.round(e.clientY - r.top));
+  };
   canvas.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'touch') return;   // touch handled below
     try { canvas.setPointerCapture(e.pointerId); } catch {}
-    inj('SetTouchPointerActive', false);
+    sendPos(e);
     inj('InjectMouseButton', sdlBtn(e.button), true);
   });
-  canvas.addEventListener('pointerup', (e) => { if (e.pointerType !== 'touch') inj('InjectMouseButton', sdlBtn(e.button), false); });
-  // Worker SDL can't poll the page cursor — feed position with every move.
+  canvas.addEventListener('pointerup', (e) => { if (e.pointerType !== 'touch') { sendPos(e); inj('InjectMouseButton', sdlBtn(e.button), false); } });
   canvas.addEventListener('pointermove', (e) => {
     if (e.pointerType === 'touch') return;
-    const r = canvas.getBoundingClientRect();
-    inj('InjectMousePosition', Math.round(e.clientX - r.left), Math.round(e.clientY - r.top));
+    sendPos(e);
     inj('InjectMouseMotion');
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -201,7 +209,7 @@ export function boot() {
         inj('InjectMouseButton', 1, true); inj('InjectMouseButton', 1, false);
       }
       t = null;
-      setTimeout(() => { if (!t) inj('SetTouchPointerActive', false); }, 50);
+      // injection stays active — it's the only position source in worker mode
     };
     canvas.addEventListener('pointerup', endTouch, { passive: false });
     canvas.addEventListener('pointercancel', endTouch, { passive: false });
