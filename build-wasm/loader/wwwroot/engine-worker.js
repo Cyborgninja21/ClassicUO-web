@@ -67,6 +67,9 @@ async function opfsHasAll() {
     return true;
   } catch { return false; }
 }
+let uoJsStore = false;
+let runtimeApi = null;
+
 async function opfsWrite(dir, f, buf) {
   const w = await (await dir.getFileHandle(f, { create: true })).createWritable();
   await w.write(buf); await w.close();
@@ -212,6 +215,7 @@ async function boot(msg) {
     .withModuleConfig({ canvas, print: (t) => log(t), printErr: (t) => log(t) })
     .create();
   const cfg = api.getConfig();
+  runtimeApi = api; // module-level: heap introspection for the stats snapshot
   exports = await api.getAssemblyExports(cfg.mainAssemblyName);
 
   // WS lives IN the worker (plain WebSocket works here).
@@ -241,7 +245,13 @@ async function boot(msg) {
   });
 
   exports.ClassicUOLoader.Init();
-  exports.ClassicUOLoader.MkUODir();
+  // Sprint 11: mount /uo on the wasmfs js_file backend — art bytes live in
+  // JS-heap typed arrays OUTSIDE the wasm32 4GB heap. Persistence is the
+  // JS OPFS cache, unchanged. Falls back to heap-backed MEMFS on failure.
+  uoJsStore = false;
+  try { uoJsStore = !!exports.ClassicUOLoader.MountUOStore(); } catch (e) { log('[art] js-store mount threw: ' + e); }
+  if (!uoJsStore) exports.ClassicUOLoader.MkUODir();
+  log('[art] /uo store: ' + (uoJsStore ? 'js-memory (off-heap)' : 'MEMFS (heap)'));
 
   setPhase('art');
   const manifest = await fetchManifest();
@@ -303,9 +313,13 @@ async function boot(msg) {
   // perf beacon + stats snapshot for the shell
   setInterval(() => {
     const t = tickStats();
+    // Heap size rides the stats snapshot (sprint 11: the OPFS store's whole
+    // point is shrinking this number — make it observable from the page).
+    try { t.heapMB = +(runtimeApi.Module.HEAP8.length / 1048576).toFixed(0); } catch {}
+    t.uoStore = uoJsStore ? 'jsmem' : 'memfs';
     out('stats', { stats: t });
     if (diag.phase === 'rendering' && t.n) {
-      beacon('perf', { tick_mean: +t.mean.toFixed(2), tick_p50: +t.p50.toFixed(2), tick_p95: +t.p95.toFixed(2), tick_max: +t.max.toFixed(2), n: t.n });
+      beacon('perf', { tick_mean: +t.mean.toFixed(2), tick_p50: +t.p50.toFixed(2), tick_p95: +t.p95.toFixed(2), tick_max: +t.max.toFixed(2), n: t.n, heap_mb: t.heapMB });
     }
   }, 5000);
 }

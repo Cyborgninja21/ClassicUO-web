@@ -108,7 +108,15 @@ export function boot() {
       const u = new URL(location.href); u.searchParams.delete('worker'); location.href = u.href;
     }
     else if (m.t === 'ready') resize();   // initial resize raced the boot — exports exist now
-    else if (m.t === 'fatal') { log('[fatal] ' + m.msg); statusEl.textContent = '⚠ ' + m.msg; }
+    else if (m.t === 'fatal') {
+      log('[fatal] ' + m.msg); statusEl.textContent = '⚠ ' + m.msg;
+      // Worker mode is the default now — give a one-click escape hatch.
+      const u = new URL(location.href); u.searchParams.set('classic', '1');
+      const a = document.createElement('a');
+      a.href = u.href; a.textContent = ' → reload in classic mode';
+      a.style.color = '#ffd966';
+      statusEl.appendChild(a);
+    }
   };
   worker.onerror = (e) => { log('[worker error] ' + e.message); statusEl.textContent = '⚠ worker: ' + e.message; };
 

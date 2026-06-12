@@ -14,6 +14,19 @@ int mount_opfs() {
 	return ret;
 }
 
+// Sprint 11: mount /uo on the JS-file backend — file bytes live in
+// JS-heap typed arrays OUTSIDE the wasm32 4GB address space, with fully
+// synchronous read/write (no pthreads/asyncify, works on main thread
+// and in workers alike). This is the heap-ceiling endgame: the ~1.6GB
+// art set leaves the wasm heap. (The OPFS wasmfs backend was spiked
+// first and is a dead end here: its real I/O requires pthread proxying
+// — metadata ops half-work, the first data op kills the runtime.)
+int mount_uo_jsstore() {
+	backend_t js = wasmfs_create_js_file_backend();
+	if (!js) return -1;
+	return wasmfs_create_directory("/uo", 0777, js);
+}
+
 backend_t fetch_backend = NULL;
 
 int mount_fetch(char *srcdir, char *dstdir) {
