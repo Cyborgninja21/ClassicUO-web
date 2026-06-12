@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>worker spike</title></head>
+<body style="margin:0;background:#111">
+<canvas id="canvas" width="900" height="650" style="width:900px;height:650px"></canvas>
+<pre id="log" style="color:#0f0;font:11px monospace;white-space:pre-wrap"></pre>
+<script>
+  const logEl = document.getElementById('log');
+  const log = (m) => { logEl.textContent += m + '\n'; console.log('[spike] ' + m); };
+  const canvas = document.getElementById('canvas');
+  const off = canvas.transferControlToOffscreen();
+  const w = new Worker('spike-worker.js', { type: 'module' });
+  w.onmessage = (e) => log(e.data);
+  w.onerror = (e) => log('WORKER ERROR: ' + e.message + ' @' + e.filename + ':' + e.lineno);
+  w.postMessage({ canvas: off, width: 900, height: 650 }, [off]);
+</script>
+</body>
+</html>
