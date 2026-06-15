@@ -35,8 +35,8 @@ export async function boot() {
   // L6 (D5): bridge the page's ?mods= into the worker URL (a worker can't read
   // the page query); uo-config `mods` the worker reads itself.
   try { const pm = new URLSearchParams(location.search).get('mods'); if (pm) wq.set('mods', pm); } catch {}
-  // D6: bridge ?transport=/?wt= into the worker URL.
-  try { const q = new URLSearchParams(location.search); if (q.get('transport')) wq.set('transport', q.get('transport')); if (q.get('wt')) wq.set('wt', q.get('wt')); } catch {}
+  // D6: bridge ?transport=/?wt=/?wtcert= into the worker URL.
+  try { const q = new URLSearchParams(location.search); if (q.get('transport')) wq.set('transport', q.get('transport')); if (q.get('wt')) wq.set('wt', q.get('wt')); if (q.get('wtcert')) wq.set('wtcert', q.get('wtcert')); } catch {}
   const workerUrl = './engine-worker.js' + (wq.toString() ? '?' + wq.toString() : '');
   log('[art] channel=' + sel.channel + (sel.pin ? ' · pinned ' + sel.pin : ' · head'));
 
