@@ -8,6 +8,16 @@
 // (which has the folder picker).
 import { UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection, fetchPatchManifest, selectPatch, deltaUrl } from './art-contract.js';
 import { applyDelta } from './art-delta-codec.js';
+import { PluginHost } from './plugin-host.js';
+import { ReferenceAssistant } from './reference-assistant.js';
+import { resolveModSpecs, loadMods, makeModContext } from './mod-loader.js';
+import { openTransport, resolveTransport } from './net-transport.js';
+// L4 (D3): plugin host runs IN the worker (where packets flow in worker mode).
+PluginHost.register(ReferenceAssistant);
+try { globalThis.UO = Object.assign(globalThis.UO || {}, { plugins: PluginHost }); } catch {}
+// L? (D6): net transport opts (WS default / WebTransport), set once the worker
+// reads uo-config; referenced by the uo-ws wsOpen closure at connect time.
+let _transportOpts = { transport: null, wtUrl: null };
 
 // L5 (D4): the channel + version pin arrive in the worker URL (shell.js bridges
 // the page query / localStorage / uo-config, which a worker can't read itself).
@@ -291,21 +301,25 @@ async function boot(msg) {
   runtimeApi = api; // module-level: heap introspection for the stats snapshot
   exports = await api.getAssemblyExports(cfg.mainAssemblyName);
 
-  // WS lives IN the worker (plain WebSocket works here).
-  let ws = null;
+  // Net transport (WS / WebTransport) lives IN the worker (both work here).
+  let ws = null;                                  // the active transport {send,close,kind}
   api.setModuleImports('uo-ws', {
     wsOpen: (url) => {
       try { ws && ws.close(); } catch {}
-      try {
-        ws = new WebSocket(url);
-        ws.binaryType = 'arraybuffer';
-        ws.onopen = () => { try { exports.ClassicUOLoader.WsOnOpen(); } catch (e) { log('WsOnOpen EX ' + e); } };
-        ws.onmessage = (ev) => { try { exports.ClassicUOLoader.WsOnMessage(new Uint8Array(ev.data)); } catch (e) { log('WsOnMessage EX ' + e); } };
-        ws.onclose = () => { try { exports.ClassicUOLoader.WsOnClose(); } catch {} };
-        ws.onerror = () => { try { exports.ClassicUOLoader.WsOnError(); } catch {} };
-      } catch (e) { log('wsOpen EX ' + e); try { exports.ClassicUOLoader.WsOnError(); } catch {} }
+      ws = null;
+      const cb = {
+        onOpen: () => { try { PluginHost.fire('connect'); exports.ClassicUOLoader.WsOnOpen(); } catch (e) { log('WsOnOpen EX ' + e); } },
+        onMessage: (bytes) => { try { const b = PluginHost.packetIn(bytes); if (b) exports.ClassicUOLoader.WsOnMessage(b); } catch (e) { log('WsOnMessage EX ' + e); } },
+        onClose: () => { try { PluginHost.fire('disconnect'); exports.ClassicUOLoader.WsOnClose(); } catch {} },
+        onError: () => { try { exports.ClassicUOLoader.WsOnError(); } catch {} },
+      };
+      openTransport(url, _transportOpts, cb).then((t) => {
+        ws = t;
+        PluginHost.bindSend((b) => t.send(b));
+        if (t.kind !== 'websocket') log('[net] transport: ' + t.kind);
+      }).catch((e) => { log('wsOpen EX ' + e); try { exports.ClassicUOLoader.WsOnError(); } catch {} });
     },
-    wsSend: (data) => { try { if (ws && ws.readyState === 1) ws.send(data); } catch (e) { log('wsSend EX ' + e); } },
+    wsSend: (data) => { try { const b = PluginHost.packetOut(data instanceof Uint8Array ? data : new Uint8Array(data)); if (b && ws) ws.send(b); } catch (e) { log('wsSend EX ' + e); } },
     wsClose: () => { try { ws && ws.close(); } catch {} ws = null; },
   });
   // Audio bridges to the page (no AudioContext in workers).
@@ -332,6 +346,14 @@ async function boot(msg) {
   out('artmeta', { version: manifest.version || null, channel: manifest.channel || _artSel.channel, pinned: !!manifest.pinned });
   log('[art] channel=' + (manifest.channel || _artSel.channel) + (manifest.pinned ? ' · pinned ' + _artSel.pin : ' · head') + (manifest.version ? ' · v=' + manifest.version : ''));
   await loadArt(manifest);
+  // L6 (D5): load content mods (uo-config `mods:[…]` + ?mods=, bridged by shell.js
+  // into the worker URL). Each registers its D3 plugin + runs onLoad(ctx).
+  try {
+    let cfg = null; try { cfg = await (await fetch('./uo-config.json')).json(); } catch {}
+    _transportOpts = resolveTransport(cfg, self.location.search);   // D6
+    const specs = resolveModSpecs(cfg, self.location.search);
+    if (specs.length) { const ml = await loadMods(specs, makeModContext(cfg, exports)); log('[mod] loaded ' + ml.length + '/' + specs.length); }
+  } catch (e) { log('[mod] loader error: ' + e); }
 
   // Login background: createImageBitmap + OffscreenCanvas 2D both work in workers.
   try {
