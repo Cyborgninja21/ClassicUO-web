@@ -200,20 +200,29 @@ setPhase('runtime-up');
 // JS-interop WebSocket (module "uo-ws", driven by WasmWebSocketBridge in managed code).
 // A plain JS WebSocket owned here, bytes crossing synchronously — bypasses
 // ClientWebSocket whose async dies on the .NET-WASM threadpool reverse-pinvoke under AOT.
-let _ws = null;
+let _ws = null;                                   // the active transport {send,close,kind}
+let _transportOpts = { transport: null, wtUrl: null };   // D6: set once uo-config is read
 setModuleImports('uo-ws', {
   wsOpen: (url) => {
     try { _ws && _ws.close(); } catch {}
-    try {
-      _ws = new WebSocket(url);
-      _ws.binaryType = 'arraybuffer';
-      _ws.onopen = () => { try { exports.ClassicUOLoader.WsOnOpen(); } catch (e) { _fatal('WsOnOpen', e); } };
-      _ws.onmessage = (ev) => { try { exports.ClassicUOLoader.WsOnMessage(new Uint8Array(ev.data)); } catch (e) { _fatal('WsOnMessage', e); } };
-      _ws.onclose = () => { try { exports.ClassicUOLoader.WsOnClose(); } catch {} };
-      _ws.onerror = () => { try { exports.ClassicUOLoader.WsOnError(); } catch {} };
-    } catch (e) { _fatal('wsOpen', e); try { exports.ClassicUOLoader.WsOnError(); } catch {} }
+    _ws = null;
+    // L4 (D3) packet interception + lifecycle fan-out at the transport boundary.
+    const cb = {
+      onOpen: () => { try { PluginHost.fire('connect'); exports.ClassicUOLoader.WsOnOpen(); } catch (e) { _fatal('WsOnOpen', e); } },
+      onMessage: (bytes) => { try { const b = PluginHost.packetIn(bytes); if (b) exports.ClassicUOLoader.WsOnMessage(b); } catch (e) { _fatal('WsOnMessage', e); } },
+      onClose: () => { try { PluginHost.fire('disconnect'); exports.ClassicUOLoader.WsOnClose(); } catch {} },
+      onError: () => { try { exports.ClassicUOLoader.WsOnError(); } catch {} },
+    };
+    // L? (D6): WebSocket by default; WebTransport when configured + supported,
+    // with automatic WS fallback. openTransport is async; the engine fires this
+    // and waits on WsOnOpen, exactly as with the old async WS open.
+    openTransport(url, _transportOpts, cb).then((t) => {
+      _ws = t;
+      PluginHost.bindSend((b) => t.send(b));     // D3: plugins inject via the live transport
+      if (t.kind !== 'websocket') _log('[net] transport: ' + t.kind);
+    }).catch((e) => { _fatal('wsOpen', e); try { exports.ClassicUOLoader.WsOnError(); } catch {} });
   },
-  wsSend: (data) => { try { if (_ws && _ws.readyState === 1) _ws.send(data); } catch (e) { _fatal('wsSend', e); } },
+  wsSend: (data) => { try { const b = PluginHost.packetOut(data instanceof Uint8Array ? data : new Uint8Array(data)); if (b && _ws) _ws.send(b); } catch (e) { _fatal('wsSend', e); } },
   wsClose: () => { try { _ws && _ws.close(); } catch {} _ws = null; },
 });
 
@@ -332,6 +341,14 @@ console.log('[art] /uo store: ' + (uoJsStore ? 'js-memory (off-heap)' : 'MEMFS (
 // Shared with engine-worker.js — single source of truth (sprint 9).
 import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection, fetchPatchManifest, selectPatch, deltaUrl } from './art-contract.js';
 import { applyDelta } from './art-delta-codec.js';
+import { PluginHost } from './plugin-host.js';
+import { ReferenceAssistant } from './reference-assistant.js';
+import { resolveModSpecs, loadMods, makeModContext } from './mod-loader.js';
+import { openTransport, resolveTransport } from './net-transport.js';
+// L4 (D3): the bundled reference assistant proves the host end-to-end + documents
+// the API. D5 mods register additional plugins via PluginHost.register / window.UO.
+PluginHost.register(ReferenceAssistant);
+try { globalThis.UO = Object.assign(globalThis.UO || {}, { plugins: PluginHost }); } catch {}
 
 // L5 (D4) art channel/pin selection, resolved at boot from query > localStorage
 // > uo-config. Drives which manifest the loader fetches (channel + optional
@@ -844,6 +861,8 @@ async function loadArt() {
 // chosen via the URL is persisted so it sticks across reloads.
 let _uoConfig = null;
 try { _uoConfig = await (await fetch('./uo-config.json')).json(); } catch {}
+// L? (D6): resolve the transport (WS default / WebTransport) before the engine connects.
+_transportOpts = resolveTransport(_uoConfig, location.search);
 let _artStored = {};
 try { _artStored = JSON.parse(localStorage.getItem('uo-art-sel') || '{}'); } catch {}
 try {
@@ -869,6 +888,12 @@ let settings = {
   lang: "ENU", encryption: 0, use_verdata: false
 };
 if (_uoConfig) { try { settings = Object.assign(settings, _uoConfig); } catch {} }
+// L6 (D5): load content mods (uo-config `mods:[…]` + ?mods=). Each registers its
+// D3 plugin + runs onLoad(ctx) with writeArt access. Isolated — a bad mod skips.
+try {
+  const _modSpecs = resolveModSpecs(_uoConfig, location.search);
+  if (_modSpecs.length) { const _ml = await loadMods(_modSpecs, makeModContext(_uoConfig, exports)); _log('[mod] loaded ' + _ml.length + '/' + _modSpecs.length); }
+} catch (e) { _log('[mod] loader error: ' + e); }
 if (settings.diag_endpoint) { diag.endpoint = settings.diag_endpoint; delete settings.diag_endpoint; }
 // Decode the login background in the BROWSER (canvas) and hand RGBA to managed —
 // both FNA3D's stb_image callbacks and ImageSharp's PNG decoder trap under WASM AOT.

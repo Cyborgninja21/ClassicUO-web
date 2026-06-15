@@ -32,6 +32,11 @@ export async function boot() {
   const wq = new URLSearchParams();
   if (sel.channel && sel.channel !== 'stable') wq.set('channel', sel.channel);
   if (sel.pin) wq.set('artpin', sel.pin);
+  // L6 (D5): bridge the page's ?mods= into the worker URL (a worker can't read
+  // the page query); uo-config `mods` the worker reads itself.
+  try { const pm = new URLSearchParams(location.search).get('mods'); if (pm) wq.set('mods', pm); } catch {}
+  // D6: bridge ?transport=/?wt= into the worker URL.
+  try { const q = new URLSearchParams(location.search); if (q.get('transport')) wq.set('transport', q.get('transport')); if (q.get('wt')) wq.set('wt', q.get('wt')); } catch {}
   const workerUrl = './engine-worker.js' + (wq.toString() ? '?' + wq.toString() : '');
   log('[art] channel=' + sel.channel + (sel.pin ? ' · pinned ' + sel.pin : ' · head'));
 
