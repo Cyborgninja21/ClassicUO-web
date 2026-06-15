@@ -6,7 +6,8 @@
 // v1 scope: SERVER-HOSTED ART ONLY. If /uo-data has no manifest, the worker
 // reports 'fallback' and shell.js reloads into the classic main-thread mode
 // (which has the folder picker).
-import { UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, checkIntegrity, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection } from './art-contract.js';
+import { UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection, fetchPatchManifest, selectPatch, deltaUrl } from './art-contract.js';
+import { applyDelta } from './art-delta-codec.js';
 
 // L5 (D4): the channel + version pin arrive in the worker URL (shell.js bridges
 // the page query / localStorage / uo-config, which a worker can't read itself).
@@ -26,6 +27,28 @@ async function opfsReadState(dir) {
 }
 async function opfsSizeOf(dir, name) {
   try { return (await (await dir.getFileHandle(name)).getFile()).size; } catch { return null; }
+}
+async function opfsReadFile(dir, name) {
+  try { return new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer()); } catch { return null; }
+}
+// L3 (D2): reconstruct one changed file from a binary delta vs the cached bytes.
+// Returns true on success; any mismatch/error → false (caller full-fetches).
+async function tryApplyPatch(dir, entry, patch, baseUrl, hash) {
+  try {
+    const base = await opfsReadFile(dir, entry.name);
+    if (!base) return false;
+    const dResp = await fetch(deltaUrl(baseUrl, entry.name), { cache: 'no-store' });
+    if (!dResp.ok) return false;
+    const delta = new Uint8Array(await dResp.arrayBuffer());
+    const result = applyDelta(base, delta);
+    if (patch.result_size != null && result.length !== patch.result_size) return false;
+    if (hash) { const rh = await sha256Hex(result); if (rh && rh !== patch.result_sha256) return false; }
+    exports.ClassicUOLoader.WriteUOFile('/uo/' + entry.name, result);
+    try { await opfsWrite(dir, entry.name, result); } catch {}
+    recordValidated(entry, result);
+    log('[art] patched ' + entry.name + ' (' + delta.length + 'B delta → ' + result.length + 'B)');
+    return true;
+  } catch (e) { log('[art] patch ' + entry.name + ' fell back to full fetch: ' + e); return false; }
 }
 async function persistArtState(dir) {
   try { if (_artValidated) await opfsWrite(dir, ART_STATE_NAME, new TextEncoder().encode(serializeArtState(_artValidated))); } catch {}
@@ -188,10 +211,22 @@ async function loadArt(manifest) {
     const have = new Set(names);
     if (_artValidated == null) _artValidated = await opfsReadState(dir);
     const { refetch } = await computeArtDelta(manifest, have, _artValidated, (n) => opfsSizeOf(dir, n));
-    const { priority, deferred } = splitTiers(refetch);
-    if (refetch.length) {
-      const changed = refetch.filter((e) => have.has(e.name)).length;
-      log('[art] delta: ' + changed + ' changed, ' + (refetch.length - changed) + ' missing → re-syncing');
+    // L3 (D2): patch changed files we already hold; the rest full-fetch.
+    const patchMan = await fetchPatchManifest();
+    let full = refetch, patched = 0;
+    if (patchMan) {
+      full = [];
+      for (const e of refetch) {
+        const rec = have.has(e.name) ? _artValidated.get(e.name) : null;
+        const p = rec && selectPatch(patchMan, e.name, rec.sha256, e.sha256);
+        if (p && await tryApplyPatch(dir, e, p, baseUrl, hash)) { patched++; continue; }
+        full.push(e);
+      }
+    }
+    const { priority, deferred } = splitTiers(full);
+    {
+      const changed = full.filter((e) => have.has(e.name)).length;
+      log('[art] delta: ' + patched + ' patched, ' + changed + ' changed, ' + (full.length - changed) + ' missing → re-syncing');
     }
     if (priority.length) { try { await fetchTier(priority, baseUrl, dir, hash, 'updating art…'); } catch (e) { log('[art] ' + e); } }
     await persistArtState(dir);

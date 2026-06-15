@@ -330,7 +330,8 @@ console.log('[art] /uo store: ' + (uoJsStore ? 'js-memory (off-heap)' : 'MEMFS (
 // /uo-data/ server fallback so the harness e2e needs no picker. Nothing is uploaded.
 // ===========================================================================
 // Shared with engine-worker.js — single source of truth (sprint 9).
-import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection } from './art-contract.js';
+import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection, fetchPatchManifest, selectPatch, deltaUrl } from './art-contract.js';
+import { applyDelta } from './art-delta-codec.js';
 
 // L5 (D4) art channel/pin selection, resolved at boot from query > localStorage
 // > uo-config. Drives which manifest the loader fetches (channel + optional
@@ -468,6 +469,7 @@ async function artCache() {
       load: (manifest) => loadFromOpfs(manifest),
       keys: opfsArtKeys,
       sizeOf: opfsSizeOf,
+      read: async (f) => { try { return new Uint8Array(await (await (await (await opfsArtDir(false)).getFileHandle(f)).getFile()).arrayBuffer()); } catch { return null; } },
       write: async (f, buf) => { const d = await opfsArtDir(true); await opfsWrite(d, f, buf); },
       readState: async () => {
         try { const fh = await (await opfsArtDir(false)).getFileHandle(ART_STATE_NAME); return parseArtState(await (await fh.getFile()).text()); }
@@ -497,6 +499,7 @@ async function artCache() {
         write: (f, buf) => idbPut(db, f, buf),
         keys: async () => { try { return (await idbKeys(db)).filter(k => k !== ART_STATE_NAME); } catch { return []; } },
         sizeOf: async (n) => { try { const v = await idbGet(db, n); return v ? (v.byteLength ?? v.length ?? null) : null; } catch { return null; } },
+        read: async (n) => { try { const v = await idbGet(db, n); return v ? (v instanceof Uint8Array ? v : new Uint8Array(v)) : null; } catch { return null; } },
         readState: async () => { try { const v = await idbGet(db, ART_STATE_NAME); return parseArtState(v ? new TextDecoder().decode(v instanceof Uint8Array ? v : new Uint8Array(v)) : null); } catch { return new Map(); } },
         writeState: async (map) => { try { await idbPut(db, ART_STATE_NAME, new TextEncoder().encode(serializeArtState(map))); } catch {} },
       };
@@ -650,6 +653,29 @@ async function fetchValidateWrite(baseUrl, entry, cache, hash, onBytes, resetByt
 // so a shard art update silently never reached cached clients. Required-tier
 // gaps/changes block boot (they bind into MEMFS before the engine starts);
 // recommended-tier ones stream in the background and bind at the next load.
+// L3 (D2): reconstruct one changed file from a tiny binary delta against the
+// bytes already cached, instead of a full re-download. Returns true on success;
+// any mismatch/error returns false so the caller full-fetches (safe fallback).
+async function tryApplyPatch(cache, entry, patch, baseUrl, hash) {
+  if (!cache || !cache.read) return false;
+  try {
+    const base = await cache.read(entry.name);
+    if (!base) return false;
+    const dResp = await fetch(deltaUrl(baseUrl, entry.name), { cache: 'no-store' });
+    if (!dResp.ok) return false;
+    const delta = new Uint8Array(await dResp.arrayBuffer());
+    const result = applyDelta(base, delta);                       // throws on bad/foreign delta
+    if (patch.result_size != null && result.length !== patch.result_size) return false;
+    if (hash) { const rh = await sha256Hex(result); if (rh && rh !== patch.result_sha256) return false; }
+    exports.ClassicUOLoader.WriteUOFile('/uo/' + entry.name, result);
+    try { await cache.write(entry.name, result); } catch {}
+    recordValidated(entry, result);
+    _log('[art] patched ' + entry.name + ' (' + delta.length + 'B delta → ' + result.length + 'B, saved ' +
+      Math.round((1 - delta.length / Math.max(1, result.length)) * 100) + '%)');
+    return true;
+  } catch (e) { _log('[art] patch ' + entry.name + ' fell back to full fetch: ' + e); return false; }
+}
+
 async function reconcileArt(cache, manifest) {
   if (!cache || !cache.keys || !manifest || !manifest.size) return;
   try {
@@ -657,13 +683,25 @@ async function reconcileArt(cache, manifest) {
     if (_artValidated == null) _artValidated = cache.readState ? await cache.readState() : new Map();
     const { refetch } = await computeArtDelta(manifest, present, _artValidated, cache.sizeOf);
     if (!refetch.length) { await persistArtState(cache); return; }
-    const changed = refetch.filter(e => present.has(e.name)).map(e => e.name);
-    const missing = refetch.length - changed.length;
-    _log('[art] delta: ' + changed.length + ' changed, ' + missing + ' missing → re-syncing' +
-      (changed.length ? ' (' + changed.slice(0, 6).join(', ') + (changed.length > 6 ? ', +' + (changed.length - 6) : '') + ')' : ''));
     const baseUrl = new URL('/uo-data/', location.href).href;
     const hash = !!(typeof crypto !== 'undefined' && crypto.subtle);
-    const { priority, deferred } = splitTiers(refetch);
+    // L3: try to PATCH changed files we already hold (delta vs the cached bytes);
+    // anything not patchable (missing, no delta, base/target mismatch, decode
+    // fail) falls through to a full fetch.
+    const patchMan = await fetchPatchManifest();
+    let full = refetch, patched = 0;
+    if (patchMan) {
+      full = [];
+      for (const e of refetch) {
+        const rec = present.has(e.name) ? _artValidated.get(e.name) : null;
+        const p = rec && selectPatch(patchMan, e.name, rec.sha256, e.sha256);
+        if (p && await tryApplyPatch(cache, e, p, baseUrl, hash)) { patched++; continue; }
+        full.push(e);
+      }
+    }
+    const changed = full.filter(e => present.has(e.name)).length;
+    _log('[art] delta: ' + patched + ' patched, ' + changed + ' changed, ' + (full.length - changed) + ' missing → re-syncing');
+    const { priority, deferred } = splitTiers(full);
     if (priority.length) {
       try { await fetchTier(priority, baseUrl, cache, hash, 'updating art…'); }
       catch (e) { _log('[art] ' + e); }

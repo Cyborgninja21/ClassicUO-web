@@ -119,6 +119,38 @@ export async function fetchManifestVersion(channel) {
   } catch { return null; }
 }
 
+// ── L3: binary art patching (D2) ─────────────────────────────────────────────
+// When the server publishes deltas (gen-art-deltas → /uo-data/patch-manifest.json
+// + /uo-data/deltas/<name>.uodelta), a changed file the client already has can be
+// reconstructed from a tiny delta against the cached bytes instead of a full
+// re-download. Best-effort: absent/blocked manifest → no patching, full fetch.
+export async function fetchPatchManifest() {
+  try {
+    const r = await fetch('/uo-data/deltas/patch-manifest.json', { cache: 'no-store' });
+    if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return null;
+    const j = await r.json();
+    const m = new Map();
+    for (const p of (j && j.patches) || []) if (p && p.name) m.set(p.name, p);
+    return m.size ? m : null;
+  } catch { return null; }
+}
+
+// Pure: is `name` patchable from the cached base to the manifest target?
+// Returns the patch entry to apply, or null (→ full fetch). Requires the cached
+// file's sha256 to equal the patch base AND the patch result to equal the target.
+export function selectPatch(patchMan, name, cachedSha, targetSha) {
+  if (!patchMan || !cachedSha) return null;
+  const p = patchMan.get(name);
+  if (!p || !p.base_sha256 || !p.result_sha256) return null;
+  if (p.base_sha256 !== cachedSha) return null;                 // we don't hold the patch's base
+  if (targetSha && p.result_sha256 !== targetSha) return null;  // patch target ≠ current manifest
+  return p;
+}
+
+export function deltaUrl(baseUrl, name) {
+  return baseUrl + 'deltas/' + name + '.uodelta';
+}
+
 // ── L2: content-addressed delta sync (D1) ────────────────────────────────────
 // The cache holds files BY NAME. Before this, the client only re-fetched files
 // that were *missing* by name — so a shard that UPDATES an art file (same name,
