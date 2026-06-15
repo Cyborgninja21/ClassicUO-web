@@ -41,11 +41,81 @@ export function parseManifest(json) {
   return m;
 }
 
-export async function fetchManifest() {
+// ── L5: update channels + version/pin model (D4) ─────────────────────────────
+// The manifest is fetched per CHANNEL and optionally PINNED to a specific
+// version (rollback). Resolution precedence: URL query (?channel=/?artpin=) >
+// a persisted user choice > uo-config.json > defaults (stable, unpinned). The
+// server keeps the live channel manifest at /uo-data/manifest[.<channel>].json
+// and an immutable per-version archive at /uo-data/manifests/<version>.json
+// (what a pin resolves to), plus /uo-data/versions.json (the history index).
+export function manifestUrl(channel, pin) {
+  if (pin) return '/uo-data/manifests/' + encodeURIComponent(pin) + '.json';
+  if (channel && channel !== 'stable') return '/uo-data/manifest.' + encodeURIComponent(channel) + '.json';
+  return '/uo-data/manifest.json';
+}
+// Companion metadata sibling for a channel head (version/generated). Kept
+// SEPARATE from the file manifest so manifest.json stays a bare array —
+// backward-compatible with already-deployed clients that pre-date L5.
+export function manifestMetaUrl(channel) {
+  if (channel && channel !== 'stable') return '/uo-data/manifest.' + encodeURIComponent(channel) + '.meta.json';
+  return '/uo-data/manifest.meta.json';
+}
+
+// Pure: pick {channel, pin} from a URL search string, a persisted store object,
+// and a config object (any may be null). Query wins, then store, then config.
+export function resolveArtSelection(search, stored, config) {
+  const q = new URLSearchParams(search || '');
+  const s = stored || {};
+  const c = config || {};
+  const pick = (qk, sk, ck) => {
+    const qv = q.get(qk);
+    if (qv != null && qv !== '') return qv;
+    if (s[sk] != null && s[sk] !== '') return s[sk];
+    if (c[ck] != null && c[ck] !== '') return c[ck];
+    return null;
+  };
+  const channel = pick('channel', 'channel', 'art_channel') || 'stable';
+  // pin: an EXPLICIT ?artpin= in the query is authoritative even when empty —
+  // empty means "clear the pin" (rollback off), overriding stored/config.
+  let pin;
+  if (q.has('artpin')) pin = q.get('artpin') || null;
+  else pin = pick('artpin', 'pin', 'art_pin');
+  return { channel, pin: pin || null };
+}
+
+// Fetch + parse a manifest. Accepts BOTH the bare `[{name,size,sha256}]` array
+// (backward-compatible — what manifest.json is) AND an L5 envelope
+// {version, channel, generated, files:[...]}. The returned Map carries .version
+// /.channel/.pinned metadata (Maps allow extra props) for reporting + pin
+// display. For a bare array the version comes from the pin (if pinned) or a
+// best-effort companion manifest.meta.json fetch.
+export async function fetchManifest(opts) {
+  const { channel = 'stable', pin = null } = opts || {};
   try {
-    const r = await fetch('/uo-data/manifest.json', { cache: 'no-store' });
+    const r = await fetch(manifestUrl(channel, pin), { cache: 'no-store' });
     if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return null;
-    return parseManifest(await r.json());
+    const json = await r.json();
+    const isEnvelope = json && !Array.isArray(json) && Array.isArray(json.files);
+    const m = parseManifest(isEnvelope ? json.files : json);
+    if (isEnvelope) {
+      m.version = json.version || pin || null;
+      m.channel = json.channel || channel;
+    } else {
+      m.version = pin || await fetchManifestVersion(channel);
+      m.channel = channel;
+    }
+    m.pinned = !!pin;
+    return m;
+  } catch { return null; }
+}
+
+// Best-effort read of the channel head's version from the companion meta sibling.
+export async function fetchManifestVersion(channel) {
+  try {
+    const r = await fetch(manifestMetaUrl(channel), { cache: 'no-store' });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j && j.version) || null;
   } catch { return null; }
 }
 

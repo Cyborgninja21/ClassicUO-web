@@ -92,6 +92,7 @@ function wasmFrames(stack) {
 function beacon(type, extra) {
   const env = {
     type, ts: new Date().toISOString(), session: diag.session, build_sha: diag.build_sha,
+    art_version: diag.art_version || null, art_channel: diag.art_channel || null,
     phase: diag.phase, phase_ms: Math.round(performance.now() - diag.phaseTs),
     frame: diag.frame, ua: navigator.userAgent, ...extra,
   };
@@ -329,7 +330,12 @@ console.log('[art] /uo store: ' + (uoJsStore ? 'js-memory (off-heap)' : 'MEMFS (
 // /uo-data/ server fallback so the harness e2e needs no picker. Nothing is uploaded.
 // ===========================================================================
 // Shared with engine-worker.js — single source of truth (sprint 9).
-import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME } from './art-contract.js';
+import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection } from './art-contract.js';
+
+// L5 (D4) art channel/pin selection, resolved at boot from query > localStorage
+// > uo-config. Drives which manifest the loader fetches (channel + optional
+// version pin / rollback).
+let _artSel = { channel: 'stable', pin: null };
 
 // L2 (D1) in-memory mirror of the persisted "validated" sidecar (name ->
 // {size, sha256} the cached bytes were last verified against). Loaded once per
@@ -775,7 +781,8 @@ async function persistStorage() {
 
 async function loadArt() {
   const cache = await artCache();
-  const manifest = await fetchManifest();
+  const manifest = await fetchManifest(_artSel);
+  if (manifest) { diag.art_version = manifest.version || null; diag.art_channel = manifest.channel || _artSel.channel; diag.art_pinned = !!manifest.pinned; }
   if (cache && await cache.hasAll()) {
     await cache.load(manifest);
     if (_artValidated == null && cache.readState) _artValidated = await cache.readState();
@@ -792,6 +799,24 @@ async function loadArt() {
   await showArtPicker(cache);
   persistStorage();
 }
+// L5 (D4): resolve the art channel + version pin BEFORE loading art (it picks
+// which manifest we fetch). Sources, highest precedence first: URL query
+// (?channel=beta / ?artpin=<version> / ?artpin= to clear) > a persisted user
+// choice (localStorage) > uo-config.json (art_channel / art_pin). A channel/pin
+// chosen via the URL is persisted so it sticks across reloads.
+let _uoConfig = null;
+try { _uoConfig = await (await fetch('./uo-config.json')).json(); } catch {}
+let _artStored = {};
+try { _artStored = JSON.parse(localStorage.getItem('uo-art-sel') || '{}'); } catch {}
+try {
+  const q = new URLSearchParams(location.search), upd = {};
+  if (q.get('channel')) upd.channel = q.get('channel');
+  if (q.has('artpin')) upd.pin = q.get('artpin') || '';   // ?artpin= clears the pin
+  if (Object.keys(upd).length) { _artStored = Object.assign(_artStored, upd); localStorage.setItem('uo-art-sel', JSON.stringify(_artStored)); }
+} catch {}
+_artSel = resolveArtSelection(location.search, _artStored, _uoConfig);
+_log('[art] channel=' + _artSel.channel + (_artSel.pin ? ' · pinned ' + _artSel.pin : ' · head'));
+
 await loadArt();
 // Default settings render the login screen. An optional (gitignored) ./uo-config.json
 // overrides them — e.g. a ws:// proxy URL + autologin creds for an end-to-end test.
@@ -805,7 +830,7 @@ let settings = {
   ultimaonlinedirectory: "/uo", clientversion: "7.0.114.65",
   lang: "ENU", encryption: 0, use_verdata: false
 };
-try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
+if (_uoConfig) { try { settings = Object.assign(settings, _uoConfig); } catch {} }
 if (settings.diag_endpoint) { diag.endpoint = settings.diag_endpoint; delete settings.diag_endpoint; }
 // Decode the login background in the BROWSER (canvas) and hand RGBA to managed —
 // both FNA3D's stb_image callbacks and ImageSharp's PNG decoder trap under WASM AOT.

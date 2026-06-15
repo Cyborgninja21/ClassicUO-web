@@ -4,7 +4,9 @@
 // boot.js picks this path on ?worker=1; the classic main-thread path (main.js)
 // is untouched and remains the default.
 
-export function boot() {
+import { resolveArtSelection } from './art-contract.js';
+
+export async function boot() {
   const canvas = document.getElementById('canvas');
   const statusEl = document.createElement('div');
   statusEl.id = 'art-status';
@@ -12,9 +14,30 @@ export function boot() {
   document.body.appendChild(statusEl);
   const log = console.log.bind(console);
 
+  // L5 (D4): resolve the art channel + version pin here (the worker can't read
+  // the page query / localStorage / uo-config) and pass it into the worker URL
+  // so engine-worker.js fetches the right manifest. Same precedence + URL-sticks
+  // behaviour as the classic path in main.js.
+  let cfg = null;
+  try { cfg = await (await fetch('./uo-config.json')).json(); } catch {}
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem('uo-art-sel') || '{}'); } catch {}
+  try {
+    const q = new URLSearchParams(location.search), upd = {};
+    if (q.get('channel')) upd.channel = q.get('channel');
+    if (q.has('artpin')) upd.pin = q.get('artpin') || '';
+    if (Object.keys(upd).length) { stored = Object.assign(stored, upd); localStorage.setItem('uo-art-sel', JSON.stringify(stored)); }
+  } catch {}
+  const sel = resolveArtSelection(location.search, stored, cfg);
+  const wq = new URLSearchParams();
+  if (sel.channel && sel.channel !== 'stable') wq.set('channel', sel.channel);
+  if (sel.pin) wq.set('artpin', sel.pin);
+  const workerUrl = './engine-worker.js' + (wq.toString() ? '?' + wq.toString() : '');
+  log('[art] channel=' + sel.channel + (sel.pin ? ' · pinned ' + sel.pin : ' · head'));
+
   canvas.style.cursor = 'none';   // the engine draws the gauntlet; hide the OS arrow
   const off = canvas.transferControlToOffscreen();
-  const worker = new Worker('./engine-worker.js', { type: 'module' });
+  const worker = new Worker(workerUrl, { type: 'module' });
   const send = (m, tr) => worker.postMessage(m, tr || []);
   const inj = (fn, ...a) => send({ t: 'in', fn, a });
 
