@@ -6,7 +6,11 @@
 // v1 scope: SERVER-HOSTED ART ONLY. If /uo-data has no manifest, the worker
 // reports 'fallback' and shell.js reloads into the classic main-thread mode
 // (which has the folder picker).
-import { UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, checkIntegrity, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME } from './art-contract.js';
+import { UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, checkIntegrity, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME, resolveArtSelection } from './art-contract.js';
+
+// L5 (D4): the channel + version pin arrive in the worker URL (shell.js bridges
+// the page query / localStorage / uo-config, which a worker can't read itself).
+const _artSel = resolveArtSelection(self.location.search, null, null);
 
 // L2 (D1) in-memory mirror of the persisted "validated" sidecar (see main.js /
 // art-contract.js). Lets the worker re-sync content-changed art, not just
@@ -288,8 +292,10 @@ async function boot(msg) {
   log('[art] /uo store: ' + (uoJsStore ? 'js-memory (off-heap)' : 'MEMFS (heap)'));
 
   setPhase('art');
-  const manifest = await fetchManifest();
+  const manifest = await fetchManifest(_artSel);
   if (!manifest || !manifest.size) { out('fallback', {}); return; }
+  out('artmeta', { version: manifest.version || null, channel: manifest.channel || _artSel.channel, pinned: !!manifest.pinned });
+  log('[art] channel=' + (manifest.channel || _artSel.channel) + (manifest.pinned ? ' · pinned ' + _artSel.pin : ' · head') + (manifest.version ? ' · v=' + manifest.version : ''));
   await loadArt(manifest);
 
   // Login background: createImageBitmap + OffscreenCanvas 2D both work in workers.
