@@ -329,7 +329,16 @@ console.log('[art] /uo store: ' + (uoJsStore ? 'js-memory (off-heap)' : 'MEMFS (
 // /uo-data/ server fallback so the harness e2e needs no picker. Nothing is uploaded.
 // ===========================================================================
 // Shared with engine-worker.js — single source of truth (sprint 9).
-import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest } from './art-contract.js';
+import { UO_FILES, UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, sha256Hex, checkIntegrity, parseManifest, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME } from './art-contract.js';
+
+// L2 (D1) in-memory mirror of the persisted "validated" sidecar (name ->
+// {size, sha256} the cached bytes were last verified against). Loaded once per
+// session, updated as files are (re)written, persisted after each fetch tier.
+let _artValidated = null;
+function recordValidated(entry, buf) {
+  if (!_artValidated) _artValidated = new Map();
+  _artValidated.set(entry.name, { size: entry.size != null ? entry.size : (buf ? buf.length : null), sha256: entry.sha256 || null });
+}
 // Optional — loaded if the player's folder/cache has them (mobiles/items render with
 // these; the world still loads without them, just no animations). Not required by the
 // picker so partial installs work; the render loop skips anything it can't draw.
@@ -378,6 +387,7 @@ async function loadFromOpfs(manifest) {
   for await (const [name, handle] of dir.entries()) if (handle.kind === 'file') names.push(name);
   let i = 0;
   for (const f of names) {
+    if (f === ART_STATE_NAME) continue;   // the L2 sidecar is metadata, not art
     // A file the SERVER manifest no longer lists must not enter MEMFS (every
     // MEMFS byte is wasm-heap — a stale 161 MB soundLegacyMUL.uop pushed the
     // heap past Firefox's growth ceiling). Server-managed caches prune it;
@@ -396,7 +406,7 @@ async function opfsArtKeys() {
   try {
     const dir = await opfsArtDir(false);
     const names = [];
-    for await (const [name, handle] of dir.entries()) if (handle.kind === 'file') names.push(name);
+    for await (const [name, handle] of dir.entries()) if (handle.kind === 'file' && name !== ART_STATE_NAME) names.push(name);
     return names;
   } catch { return []; }
 }
@@ -453,6 +463,13 @@ async function artCache() {
       keys: opfsArtKeys,
       sizeOf: opfsSizeOf,
       write: async (f, buf) => { const d = await opfsArtDir(true); await opfsWrite(d, f, buf); },
+      readState: async () => {
+        try { const fh = await (await opfsArtDir(false)).getFileHandle(ART_STATE_NAME); return parseArtState(await (await fh.getFile()).text()); }
+        catch { return new Map(); }
+      },
+      writeState: async (map) => {
+        try { const d = await opfsArtDir(true); await opfsWrite(d, ART_STATE_NAME, new TextEncoder().encode(serializeArtState(map))); } catch {}
+      },
     };
     return _artCache;
   }
@@ -472,8 +489,10 @@ async function artCache() {
           }
         },
         write: (f, buf) => idbPut(db, f, buf),
-        keys: async () => { try { return await idbKeys(db); } catch { return []; } },
+        keys: async () => { try { return (await idbKeys(db)).filter(k => k !== ART_STATE_NAME); } catch { return []; } },
         sizeOf: async (n) => { try { const v = await idbGet(db, n); return v ? (v.byteLength ?? v.length ?? null) : null; } catch { return null; } },
+        readState: async () => { try { const v = await idbGet(db, ART_STATE_NAME); return parseArtState(v ? new TextDecoder().decode(v instanceof Uint8Array ? v : new Uint8Array(v)) : null); } catch { return new Map(); } },
+        writeState: async (map) => { try { await idbPut(db, ART_STATE_NAME, new TextEncoder().encode(serializeArtState(map))); } catch {} },
       };
       return _artCache;
     } catch { /* IndexedDB blocked (private mode etc.) — fall through to no-cache */ }
@@ -538,6 +557,7 @@ async function loadFromDevServer(cache, manifest) {
     const hash = !!(typeof crypto !== 'undefined' && crypto.subtle);
     const { priority, deferred } = splitTiers(entries);
     await fetchTier(priority, baseUrl, cache, hash, 'downloading art' + once + '…');
+    await persistArtState(cache);   // L2: record the first-download validation state
     if (deferred.length) backgroundFetch(deferred, baseUrl, cache, hash);
     return true;
   } catch (e) { _log('[art] dev-server load failed: ' + e); return false; }
@@ -551,6 +571,7 @@ function backgroundFetch(entries, baseUrl, cache, hash) {
   (async () => {
     try {
       await fetchTier(entries, baseUrl, cache, hash, 'extra animations (background)…');
+      await persistArtState(cache);   // L2: record the background-tier validation state
       _bgArtDone = true;
       artStatus('');
       _log('[art] background tier complete (' + entries.length + ' files)');
@@ -577,9 +598,15 @@ function showRefreshBanner() {
 // the source and we throw rather than write garbage the game will choke on.
 async function fetchValidateWrite(baseUrl, entry, cache, hash, onBytes, resetBytes) {
   let lastBad = null;
+  // L2 content-addressed URL: version the request by content hash so a changed
+  // file (same name, new bytes) is a distinct browser-cache key — it fetches
+  // fresh on the FIRST attempt instead of returning a stale long-cached copy,
+  // while unchanged content stays aggressively cacheable. nginx ignores the
+  // query for static files.
+  const url = baseUrl + entry.name + (entry.sha256 ? '?v=' + entry.sha256.slice(0, 16) : '');
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt && resetBytes) resetBytes();   // don't double-count refetched bytes
-    const resp = await fetch(baseUrl + entry.name, attempt ? { cache: 'reload' } : undefined);
+    const resp = await fetch(url, attempt ? { cache: 'reload' } : undefined);
     if (!resp.ok) throw new Error('fetch ' + entry.name + ' -> ' + resp.status);
     let buf;
     if (onBytes && resp.body) {
@@ -601,6 +628,7 @@ async function fetchValidateWrite(baseUrl, entry, cache, hash, onBytes, resetByt
     if (lastBad) { _log('[art] integrity FAIL ' + entry.name + ': ' + lastBad + (attempt ? ' (giving up)' : ' — refetching')); continue; }
     exports.ClassicUOLoader.WriteUOFile('/uo/' + entry.name, buf);
     if (cache) { try { await cache.write(entry.name, buf); } catch {} }
+    recordValidated(entry, buf);   // L2: remember the {size,sha256} we just verified
     return;
   }
   throw new Error('art ' + entry.name + ' corrupt after refetch: ' + lastBad);
@@ -610,23 +638,37 @@ async function fetchValidateWrite(baseUrl, entry, cache, hash, onBytes, resetByt
 // doesn't have yet (e.g. art added to the server set since the last visit), fetch ONLY
 // those — so adding art never forces a full multi-hundred-MB re-download. No-ops if the
 // dev server isn't serving art or the cache already has everything.
-async function loadMissingFromDevServer(cache, manifest) {
-  if (!cache || !cache.keys || !manifest) return;
+// L2 (D1) content-addressed delta sync after a cache hit. Subsumes the old
+// "fetch missing files" top-up AND re-fetches files whose CONTENT changed on the
+// server (same name, new sha256/size) — which name-only presence never caught,
+// so a shard art update silently never reached cached clients. Required-tier
+// gaps/changes block boot (they bind into MEMFS before the engine starts);
+// recommended-tier ones stream in the background and bind at the next load.
+async function reconcileArt(cache, manifest) {
+  if (!cache || !cache.keys || !manifest || !manifest.size) return;
   try {
-    const have = new Set(await cache.keys());
-    const missing = [...manifest.values()].filter(e => !have.has(e.name));
-    if (!missing.length) return;
+    const present = new Set(await cache.keys());
+    if (_artValidated == null) _artValidated = cache.readState ? await cache.readState() : new Map();
+    const { refetch } = await computeArtDelta(manifest, present, _artValidated, cache.sizeOf);
+    if (!refetch.length) { await persistArtState(cache); return; }
+    const changed = refetch.filter(e => present.has(e.name)).map(e => e.name);
+    const missing = refetch.length - changed.length;
+    _log('[art] delta: ' + changed.length + ' changed, ' + missing + ' missing → re-syncing' +
+      (changed.length ? ' (' + changed.slice(0, 6).join(', ') + (changed.length > 6 ? ', +' + (changed.length - 6) : '') + ')' : ''));
     const baseUrl = new URL('/uo-data/', location.href).href;
     const hash = !!(typeof crypto !== 'undefined' && crypto.subtle);
-    // Same tier rule as the first visit: only required-tier gaps block boot (e.g. a
-    // tab closed mid-first-download must not re-block on the big anim set).
-    const { priority, deferred } = splitTiers(missing);
+    const { priority, deferred } = splitTiers(refetch);
     if (priority.length) {
-      try { await fetchTier(priority, baseUrl, cache, hash, 'fetching new art…'); }
+      try { await fetchTier(priority, baseUrl, cache, hash, 'updating art…'); }
       catch (e) { _log('[art] ' + e); }
     }
+    await persistArtState(cache);
     if (deferred.length) backgroundFetch(deferred, baseUrl, cache, hash);
-  } catch (e) { _log('[art] top-up failed: ' + e); }
+  } catch (e) { _log('[art] delta sync failed: ' + e); }
+}
+
+async function persistArtState(cache) {
+  try { if (cache && cache.writeState && _artValidated) await cache.writeState(_artValidated); } catch {}
 }
 
 // First-run folder picker (webkitdirectory — works in Firefox + Chrome, unlike
@@ -736,8 +778,9 @@ async function loadArt() {
   const manifest = await fetchManifest();
   if (cache && await cache.hasAll()) {
     await cache.load(manifest);
+    if (_artValidated == null && cache.readState) _artValidated = await cache.readState();
     persistStorage();
-    await loadMissingFromDevServer(cache, manifest);   // pull any newly-added files
+    await reconcileArt(cache, manifest);   // L2: pull missing + re-sync changed files
     await validateAndReport(cache, manifest);          // completeness + integrity gate
     return;
   }

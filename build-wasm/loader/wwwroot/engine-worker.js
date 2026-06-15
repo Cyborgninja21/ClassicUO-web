@@ -6,7 +6,26 @@
 // v1 scope: SERVER-HOSTED ART ONLY. If /uo-data has no manifest, the worker
 // reports 'fallback' and shell.js reloads into the classic main-thread mode
 // (which has the folder picker).
-import { UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, checkIntegrity, fetchManifest } from './art-contract.js';
+import { UO_FILES_REQUIRED, UO_FILES_RECOMMENDED, checkIntegrity, fetchManifest, computeArtDelta, serializeArtState, parseArtState, ART_STATE_NAME } from './art-contract.js';
+
+// L2 (D1) in-memory mirror of the persisted "validated" sidecar (see main.js /
+// art-contract.js). Lets the worker re-sync content-changed art, not just
+// missing-by-name files.
+let _artValidated = null;
+function recordValidated(entry, buf) {
+  if (!_artValidated) _artValidated = new Map();
+  _artValidated.set(entry.name, { size: entry.size != null ? entry.size : (buf ? buf.length : null), sha256: entry.sha256 || null });
+}
+async function opfsReadState(dir) {
+  try { return parseArtState(await (await (await dir.getFileHandle(ART_STATE_NAME)).getFile()).text()); }
+  catch { return new Map(); }
+}
+async function opfsSizeOf(dir, name) {
+  try { return (await (await dir.getFileHandle(name)).getFile()).size; } catch { return null; }
+}
+async function persistArtState(dir) {
+  try { if (_artValidated) await opfsWrite(dir, ART_STATE_NAME, new TextEncoder().encode(serializeArtState(_artValidated))); } catch {}
+}
 
 const out = (t, data) => self.postMessage(Object.assign({ t }, data));
 const status = (msg) => out('status', { msg });
@@ -83,8 +102,11 @@ function splitTiers(entries) {
 
 async function fetchValidateWrite(baseUrl, entry, dir, hash, onBytes) {
   let lastBad = null;
+  // L2 content-addressed URL — see main.js: a changed file is a distinct cache
+  // key so it fetches fresh, unchanged content stays cacheable.
+  const url = baseUrl + entry.name + (entry.sha256 ? '?v=' + entry.sha256.slice(0, 16) : '');
   for (let attempt = 0; attempt < 2; attempt++) {
-    const resp = await fetch(baseUrl + entry.name, attempt ? { cache: 'reload' } : undefined);
+    const resp = await fetch(url, attempt ? { cache: 'reload' } : undefined);
     if (!resp.ok) throw new Error('fetch ' + entry.name + ' -> ' + resp.status);
     let buf;
     if (onBytes && resp.body) {
@@ -105,6 +127,7 @@ async function fetchValidateWrite(baseUrl, entry, dir, hash, onBytes) {
     if (lastBad) { log('[art] integrity FAIL ' + entry.name + ': ' + lastBad); continue; }
     exports.ClassicUOLoader.WriteUOFile('/uo/' + entry.name, buf);
     try { await opfsWrite(dir, entry.name, buf); } catch {}
+    recordValidated(entry, buf);   // L2: remember the {size,sha256} we just verified
     return;
   }
   throw new Error('art ' + entry.name + ' corrupt after refetch: ' + lastBad);
@@ -142,7 +165,7 @@ async function loadArt(manifest) {
   if (await opfsHasAll()) {
     status('loading cached art…');
     const names = [];
-    for await (const [name, handle] of dir.entries()) if (handle.kind === 'file') names.push(name);
+    for await (const [name, handle] of dir.entries()) if (handle.kind === 'file' && name !== ART_STATE_NAME) names.push(name);
     let i = 0;
     for (const f of names) {
       if (manifest && manifest.size && !manifest.has(f)) {        // manifest-dropped → prune
@@ -154,11 +177,20 @@ async function loadArt(manifest) {
       exports.ClassicUOLoader.WriteUOFile('/uo/' + f, buf);
       status('loading cached art… ' + (++i) + '/' + names.length);
     }
-    // top-up newly-added files (required blocks, recommended in background)
+    // L2 (D1): content-addressed delta — re-fetch missing files AND files whose
+    // bytes changed on the server (same name, new sha256/size), which name-only
+    // presence never caught. Required-tier changes bind into MEMFS before boot;
+    // recommended-tier ones stream in the background.
     const have = new Set(names);
-    const missing = [...manifest.values()].filter((e) => !have.has(e.name));
-    const { priority, deferred } = splitTiers(missing);
-    if (priority.length) { try { await fetchTier(priority, baseUrl, dir, hash, 'fetching new art…'); } catch (e) { log('[art] ' + e); } }
+    if (_artValidated == null) _artValidated = await opfsReadState(dir);
+    const { refetch } = await computeArtDelta(manifest, have, _artValidated, (n) => opfsSizeOf(dir, n));
+    const { priority, deferred } = splitTiers(refetch);
+    if (refetch.length) {
+      const changed = refetch.filter((e) => have.has(e.name)).length;
+      log('[art] delta: ' + changed + ' changed, ' + (refetch.length - changed) + ' missing → re-syncing');
+    }
+    if (priority.length) { try { await fetchTier(priority, baseUrl, dir, hash, 'updating art…'); } catch (e) { log('[art] ' + e); } }
+    await persistArtState(dir);
     if (deferred.length) backgroundTier(deferred, baseUrl, dir, hash);
     return true;
   }
@@ -166,6 +198,7 @@ async function loadArt(manifest) {
   const entries = [...manifest.values()];
   const { priority, deferred } = splitTiers(entries);
   await fetchTier(priority, baseUrl, dir, hash, 'downloading art (one time)…');
+  await persistArtState(dir);   // L2: record the first-download validation state
   if (deferred.length) backgroundTier(deferred, baseUrl, dir, hash);
   return true;
 }
@@ -174,6 +207,7 @@ function backgroundTier(entries, baseUrl, dir, hash) {
   (async () => {
     try {
       await fetchTier(entries, baseUrl, dir, hash, 'extra animations (background)…');
+      await persistArtState(dir);   // L2: record the background-tier validation state
       status('');
       out('banner', { kind: 'refresh' });
     } catch (e) { log('[art] background tier failed (retries next visit): ' + e); status(''); }
