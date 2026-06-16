@@ -375,6 +375,10 @@ async function boot(msg) {
     // this off, ClassicUO DRAWS the cursor in-engine, fully worker-compatible.
     run_mouse_in_separate_thread: false };
   try { settings = Object.assign(settings, await (await fetch('./uo-config.json')).json()); } catch {}
+  // A3 (L1): the launcher's resolved shard relay arrives via ?server= (bridged by
+  // shell.js into this worker's URL, since a worker can't read the page globals).
+  // settings.ip becomes that wss:// wsproxy URL; NetClient uses it verbatim.
+  try { const sv = new URLSearchParams(self.location.search).get('server'); if (sv && /^wss?:\/\//i.test(sv)) { settings.ip = sv; log('[launcher] shard ip=' + sv); } } catch {}
   if (settings.diag_endpoint) { diagEndpoint = settings.diag_endpoint; delete settings.diag_endpoint; }
 
   if (msg.chunkmesh) { try { exports.ClassicUOLoader.SetChunkMeshEnabled(true); } catch {} }
