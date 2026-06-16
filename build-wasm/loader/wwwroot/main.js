@@ -888,6 +888,10 @@ let settings = {
   lang: "ENU", encryption: 0, use_verdata: false
 };
 if (_uoConfig) { try { settings = Object.assign(settings, _uoConfig); } catch {} }
+// A3 (L1): the launcher's resolved shard (boot.js) drives the relay endpoint —
+// settings.ip becomes the chosen shard's wss:// wsproxy URL (NetClient uses any
+// ws/wss address verbatim). Overrides any legacy uo-config.json `ip`.
+try { if (globalThis.__uoShard && globalThis.__uoShard.ip) { settings.ip = globalThis.__uoShard.ip; _log('[launcher] shard=' + globalThis.__uoShard.id + ' ip=' + settings.ip); } } catch {}
 // L6 (D5): load content mods (uo-config `mods:[…]` + ?mods=). Each registers its
 // D3 plugin + runs onLoad(ctx) with writeArt access. Isolated — a bad mod skips.
 try {
