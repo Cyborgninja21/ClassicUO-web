@@ -1,18 +1,14 @@
-name: WASM client — image build
+name: WASM client — image build (RETIRED)
 
-# Builds the ClassicUO-web WASM bundle with the frozen FNA-WASM-Build toolchain and
-# packages it behind nginx -> ghcr.io/cyborgninja21/classicuo-web. The toolchain
-# statics live in a durable fork Release (see build-wasm/fetch-statics.sh); the .NET
-# SDK + statics are cached so only the ~5 min AOT compile runs each time.
+# RETIRED 2026-06-16: the WASM web client was consolidated into the canonical
+# Cyborgninja21/Utumno-UO-web repo, which now builds + publishes the image as
+# ghcr.io/cyborgninja21/utumno-uo-web. This repo stays public only to host the
+# toolchain statics Release (build-wasm/fetch-statics.sh STATICS_REPO) and to
+# track upstream ClassicUO. The push trigger is removed so this no longer
+# publishes the stale classicuo-web image; kept as workflow_dispatch-only for
+# emergency rebuilds of the old image during rollback.
 
 on:
-  push:
-    branches: [web-wasm]
-    paths:
-      - "build-wasm/**"
-      - "src/**"
-      - "external/**"
-      - ".github/workflows/wasm-image.yml"
   workflow_dispatch:
 
 permissions:
